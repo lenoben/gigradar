@@ -31,7 +31,7 @@ GRAPHQL_URL = "https://www.upwork.com/api/graphql/v1"
 TOKEN_COOKIE = "visitor_gql_token"
 PAGE_MAX = 50        # API caps `count` at 50
 OFFSET_MAX = 5000    # API caps `offset` at ~5000 -> ceiling ~5000 jobs/search
-MAX_RETRIES = 5
+MAX_RETRIES = int(os.environ.get("UPWORK_MAX_RETRIES", "5"))  # lower it (e.g. 2) to fail fast behind a blocked IP
 TOKEN_CACHE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".token_cache.json")
 TOKEN_TTL = 1200     # reuse a fetched visitor token for 20 min (Upwork rotates ~25 min)
 
@@ -243,7 +243,7 @@ def _invalidate_token_cache() -> None:
         pass
 
 
-def _search_with_token(filters: SearchFilters, limit: int, token: str, proxy: str | None) -> list[Job]:
+def _search_with_token(filters: SearchFilters, limit: int, offset: int, token: str, proxy: str | None) -> tuple[list[Job], int]:
     headers = {
         "Accept": "*/*",
         "Content-Type": "application/json",
@@ -252,27 +252,29 @@ def _search_with_token(filters: SearchFilters, limit: int, token: str, proxy: st
         "Authorization": f"Bearer {token}",
     }
     jobs: list[Job] = []
-    offset = 0
-    while len(jobs) < limit and offset <= OFFSET_MAX:
+    total = 0
+    cur = offset
+    while len(jobs) < limit and cur <= OFFSET_MAX:
         count = min(PAGE_MAX, limit - len(jobs))
-        variables = {"requestVariables": build_request_variables(filters, offset, count)}
+        variables = {"requestVariables": build_request_variables(filters, cur, count)}
         results, total = extract_page(_post(headers, variables, proxy))
         if not results:
             break
         jobs.extend(to_job(r) for r in results)
-        offset += PAGE_MAX
-        if offset >= total:
+        cur += PAGE_MAX
+        if cur >= total:
             break
-    return jobs[:limit]
+    return jobs[:limit], total
 
 
-def run_search(filters: SearchFilters, limit: int, proxy: str | None) -> list[Job]:
-    """Search using a cached token; on a 401 (rotated token) refresh once and retry."""
+def run_search(filters: SearchFilters, limit: int, offset: int, proxy: str | None) -> tuple[list[Job], int]:
+    """Search from `offset` using a cached token; on a 401 (rotated token) refresh once and retry.
+    Returns (jobs, total) where total is the full result count Upwork reports for the query."""
     try:
-        return _search_with_token(filters, limit, get_cached_token(proxy), proxy)
+        return _search_with_token(filters, limit, offset, get_cached_token(proxy), proxy)
     except TokenError:
         _invalidate_token_cache()
-        return _search_with_token(filters, limit, get_cached_token(proxy), proxy)
+        return _search_with_token(filters, limit, offset, get_cached_token(proxy), proxy)
 
 
 def write_json(jobs: list[Job], out) -> None:
@@ -305,6 +307,11 @@ def _self_check() -> None:
     # a happy-path parse
     j = to_job({"title": "X", "jobTile": {"job": {"ciphertext": "~abc", "jobType": "HOURLY"}}})
     assert j.url.endswith("~abc") and j.job_type == "HOURLY", j
+    # pagination: offset flows into the request paging
+    v3 = build_request_variables(
+        SearchFilters("AI", "recency", None, None, None, None, None, None, None, None, None, False), 40, 20,
+    )
+    assert v3["paging"] == {"offset": 40, "count": 20}, v3
     print("self-check OK")
 
 
@@ -321,7 +328,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--location", metavar="COUNTRY", help='client location, exact country name e.g. "United States"')
     p.add_argument("--hourly-rate", metavar="MIN-MAX", help='e.g. "25-50" (forces --job-type hourly)')
     p.add_argument("--fixed-budget", metavar="MIN-MAX", help='e.g. "1000-4999" or "5000-" (forces fixed)')
-    p.add_argument("--limit", type=int, default=50, help="max jobs (default 50, ceiling ~5000)")
+    p.add_argument("--limit", type=int, default=50, help="jobs per call / page size (default 50)")
+    p.add_argument("--offset", type=int, default=0, help="pagination start offset (0..~5000)")
+    p.add_argument("--meta", action="store_true", help='output {total, offset, count, jobs} JSON for pagination')
     p.add_argument("--format", choices=("json", "csv"), default="json")
     p.add_argument("--out", metavar="FILE", help="output file (default stdout)")
     p.add_argument("--proxy", help="http://user:pass@host:port (recommended for token fetch)")
@@ -356,7 +365,7 @@ def main() -> int:
         highlight=args.highlight,
     )
     try:
-        jobs = run_search(filters, args.limit, args.proxy)
+        jobs, total = run_search(filters, args.limit, args.offset, args.proxy)
     except (TokenError, UpworkAPIError) as exc:
         print(f"search failed: {exc}", file=sys.stderr)
         if not args.proxy:
@@ -365,11 +374,18 @@ def main() -> int:
 
     out = open(args.out, "w", newline="", encoding="utf-8") if args.out else sys.stdout
     try:
-        (write_csv if args.format == "csv" else write_json)(jobs, out)
+        if args.meta:
+            json.dump(
+                {"total": total, "offset": args.offset, "count": len(jobs), "jobs": [asdict(j) for j in jobs]},
+                out, ensure_ascii=False,
+            )
+            out.write("\n")
+        else:
+            (write_csv if args.format == "csv" else write_json)(jobs, out)
     finally:
         if args.out:
             out.close()
-    print(f"{len(jobs)} jobs", file=sys.stderr)
+    print(f"{len(jobs)} jobs (of {total})", file=sys.stderr)
     return 0
 
 

@@ -7,27 +7,38 @@ import type { SearchFilters, JobResult, SearchResponse, ApiError } from "@/lib/t
 import { SearchPanel } from "@/components/search-panel";
 import { JobResults } from "@/components/job-results";
 import { SubscribeDialog } from "@/components/subscribe-dialog";
+import { Button } from "@/components/ui/button";
+import { Spinner } from "@/components/ui/spinner";
 
 const INITIAL_FILTERS: SearchFilters = { query: "AI", limit: 20 };
+const OFFSET_CEILING = 5000; // Upwork caps pagination around this offset
 
 export default function Home() {
   const [filters, setFilters] = React.useState<SearchFilters>(INITIAL_FILTERS);
   const [jobs, setJobs] = React.useState<JobResult[]>([]);
-  const [count, setCount] = React.useState(0);
+  const [total, setTotal] = React.useState(0);
   const [loading, setLoading] = React.useState(true);
+  const [loadingMore, setLoadingMore] = React.useState(false);
   // ponytail: abort the in-flight request so rapid filter changes don't race/flicker.
   const controllerRef = React.useRef<AbortController | null>(null);
+  // The filters the currently-shown results belong to — so "Load more" pages the
+  // SAME query even if the user has since edited (but not yet re-run) the filters.
+  const activeFiltersRef = React.useRef<SearchFilters>(INITIAL_FILTERS);
 
-  const runSearch = React.useCallback(async (next: SearchFilters) => {
+  const fetchPage = React.useCallback(async (query: SearchFilters, offset: number, append: boolean) => {
     controllerRef.current?.abort();
     const controller = new AbortController();
     controllerRef.current = controller;
-    setLoading(true);
+    if (append) setLoadingMore(true);
+    else {
+      setLoading(true);
+      activeFiltersRef.current = query;
+    }
     try {
       const res = await fetch("/api/search", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(next),
+        body: JSON.stringify({ ...query, offset }),
         signal: controller.signal,
       });
       if (!res.ok) {
@@ -35,45 +46,54 @@ export default function Home() {
         throw new Error(data?.error ?? `Search failed (${res.status})`);
       }
       const data = (await res.json()) as SearchResponse;
-      setJobs(data.jobs);
-      setCount(data.count);
+      setJobs((prev) => (append ? [...prev, ...data.jobs] : data.jobs));
+      setTotal(data.total);
     } catch (err: unknown) {
       if (err instanceof DOMException && err.name === "AbortError") return; // superseded
       const message = err instanceof Error ? err.message : "Something went wrong";
       toast.error("Couldn't load jobs", { description: message });
-      setJobs([]);
-      setCount(0);
+      if (!append) {
+        setJobs([]);
+        setTotal(0);
+      }
     } finally {
-      if (controllerRef.current === controller) setLoading(false);
+      if (controllerRef.current === controller) {
+        setLoading(false);
+        setLoadingMore(false);
+      }
     }
   }, []);
 
+  const runSearch = React.useCallback((next: SearchFilters) => fetchPage(next, 0, false), [fetchPage]);
+  const loadMore = React.useCallback(
+    () => fetchPage(activeFiltersRef.current, jobs.length, true),
+    [fetchPage, jobs.length],
+  );
+
   React.useEffect(() => {
-    runSearch(INITIAL_FILTERS);
-  }, [runSearch]);
+    fetchPage(INITIAL_FILTERS, 0, false);
+  }, [fetchPage]);
 
   const countLabel = loading
     ? "Searching…"
-    : `${count.toLocaleString()} ${count === 1 ? "job" : "jobs"}`;
+    : total > 0
+      ? `${jobs.length.toLocaleString()} of ${total.toLocaleString()} ${total === 1 ? "job" : "jobs"}`
+      : "0 jobs";
+
+  const remaining = total - jobs.length;
+  const hasMore = !loading && jobs.length > 0 && remaining > 0 && jobs.length < OFFSET_CEILING;
 
   return (
     <div className="mx-auto w-full max-w-4xl px-4 pb-20">
       <header className="pt-6 sm:pt-10">
-        <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">
-          Upwork Job Search
-        </h1>
+        <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Upwork Job Search</h1>
         <p className="mt-1 text-sm text-muted-foreground sm:text-base">
           Browse Upwork jobs — no account needed.
         </p>
       </header>
 
       <div className="mt-4">
-        <SearchPanel
-          filters={filters}
-          onFiltersChange={setFilters}
-          onSearch={runSearch}
-          loading={loading}
-        />
+        <SearchPanel filters={filters} onFiltersChange={setFilters} onSearch={runSearch} loading={loading} />
       </div>
 
       <div className="mt-6 mb-4 flex items-center justify-between gap-3">
@@ -84,6 +104,26 @@ export default function Home() {
       </div>
 
       <JobResults jobs={jobs} loading={loading} />
+
+      {hasMore && (
+        <div className="mt-6 flex justify-center">
+          <Button
+            variant="outline"
+            size="lg"
+            onClick={loadMore}
+            disabled={loadingMore}
+            className="min-w-44"
+          >
+            {loadingMore ? (
+              <>
+                <Spinner className="size-4" /> Loading…
+              </>
+            ) : (
+              `Load more (${remaining.toLocaleString()} left)`
+            )}
+          </Button>
+        </div>
+      )}
     </div>
   );
 }

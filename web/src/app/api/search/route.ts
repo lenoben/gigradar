@@ -22,6 +22,11 @@ const filtersSchema = z.object({
     .int()
     .transform((n) => Math.min(100, Math.max(1, n)))
     .optional(),
+  offset: z.coerce
+    .number()
+    .int()
+    .transform((n) => Math.max(0, n))
+    .optional(),
 });
 
 function issuesToMessage(error: z.ZodError): string {
@@ -43,8 +48,9 @@ export async function POST(req: Request): Promise<Response> {
   }
 
   try {
-    const jobs = await runSearch(parsed.data);
-    return Response.json({ jobs, count: jobs.length });
+    const { offset = 0, ...filters } = parsed.data;
+    const { jobs, total } = await runSearch(filters, offset);
+    return Response.json({ jobs, count: jobs.length, total });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : "search failed";
     console.error("[api/search] runSearch failed", { message });

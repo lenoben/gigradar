@@ -37,8 +37,8 @@ export type SearchFilters = {
 };
 
 /** POST /api/search  -> SearchResponse */
-export type SearchRequest = SearchFilters;
-export type SearchResponse = { jobs: JobResult[]; count: number };
+export type SearchRequest = SearchFilters & { offset?: number };
+export type SearchResponse = { jobs: JobResult[]; count: number; total: number };
 export type ApiError = { error: string };
 
 /** POST /api/subscribe  -> { ok: true } | ApiError */

@@ -24,7 +24,7 @@ const EXEC_TIMEOUT_MS = 40_000;
 const MAX_BUFFER = 20 * 1024 * 1024;
 
 /** Map SearchFilters onto the upwork_search.py argv array. */
-function buildArgs(filters: SearchFilters): string[] {
+function buildArgs(filters: SearchFilters, offset: number): string[] {
   const args: string[] = [];
   if (filters.query) args.push("-q", filters.query);
   if (filters.jobType) args.push("--job-type", filters.jobType);
@@ -38,6 +38,8 @@ function buildArgs(filters: SearchFilters): string[] {
   if (filters.location) args.push("--location", filters.location);
   const limit = Math.min(LIMIT_MAX, Math.max(LIMIT_MIN, filters.limit ?? LIMIT_DEFAULT));
   args.push("--limit", String(limit));
+  args.push("--offset", String(Math.max(0, Math.floor(offset))));
+  args.push("--meta"); // {total, offset, count, jobs} so the UI can paginate
   // On a datacenter IP Upwork/Cloudflare 403s the token fetch; route through a
   // residential/rotating proxy when UPWORK_PROXY is set (needed on the VPS).
   const proxy = process.env.UPWORK_PROXY;
@@ -54,11 +56,12 @@ function stderrTail(err: unknown): string {
 }
 
 /**
- * Run the Upwork search CLI and return its jobs.
+ * Run the Upwork search CLI from `offset` and return the page of jobs plus the
+ * full result `total` Upwork reports (for pagination).
  * @throws Error (with the stderr tail) on nonzero exit, timeout, or unparseable output.
  */
-export async function runSearch(filters: SearchFilters): Promise<JobResult[]> {
-  const args = [SCRIPT, ...buildArgs(filters)];
+export async function runSearch(filters: SearchFilters, offset: number): Promise<{ jobs: JobResult[]; total: number }> {
+  const args = [SCRIPT, ...buildArgs(filters, offset)];
 
   let stdout: string;
   try {
@@ -77,9 +80,12 @@ export async function runSearch(filters: SearchFilters): Promise<JobResult[]> {
     const message = err instanceof Error ? err.message : String(err);
     throw new Error(`could not parse upwork_search.py JSON output (${message}) — output head: ${stdout.slice(0, 300)}`);
   }
-  if (!Array.isArray(parsed)) {
-    throw new Error(`upwork_search.py returned non-array JSON: ${stdout.slice(0, 300)}`);
+  // With --meta the tool emits { total, offset, count, jobs }.
+  if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as { jobs?: unknown }).jobs)) {
+    throw new Error(`upwork_search.py returned unexpected JSON: ${stdout.slice(0, 300)}`);
   }
+  const obj = parsed as { total?: unknown; jobs: JobResult[] };
+  const total = typeof obj.total === "number" ? obj.total : obj.jobs.length;
   // Trusted boundary: the Python Job dataclass guarantees the JobResult shape.
-  return parsed as JobResult[];
+  return { jobs: obj.jobs, total };
 }
