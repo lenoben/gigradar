@@ -1,0 +1,14 @@
+.venv
+.token_cache.json
+__pycache__
+**/__pycache__
+web/node_modules
+web/.next
+web/data
+web/.env
+web/.env.local
+web/preview-mobile.png
+web/.server.log
+.git
+**/*.pyc
+.DS_Store

@@ -1,0 +1,12 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+.token_cache.json
+
+# local artifacts
+.DS_Store
+web/preview-mobile.png
+web/.server.log
+
+# web/ has its own .gitignore for node_modules/.next/.env*/data
