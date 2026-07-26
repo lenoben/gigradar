@@ -13,6 +13,7 @@ import {
 } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { ProposalDialog } from "@/components/proposal-dialog";
 
 // RAW enum value -> nice label. Fall back to the raw value if unmapped.
 const JOB_TYPE_LABELS: Record<string, string> = {
@@ -167,6 +168,10 @@ export function JobCard({ job }: { job: JobResult }) {
             )}
           </div>
         )}
+
+        <div className="pt-1">
+          <ProposalDialog job={job} />
+        </div>
       </CardContent>
     </Card>
   );

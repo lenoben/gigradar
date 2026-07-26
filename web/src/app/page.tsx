@@ -7,6 +7,7 @@ import type { SearchFilters, JobResult, SearchResponse, ApiError } from "@/lib/t
 import { SearchPanel } from "@/components/search-panel";
 import { JobResults } from "@/components/job-results";
 import { SubscribeDialog } from "@/components/subscribe-dialog";
+import { SettingsProvider, SettingsButton } from "@/components/settings-provider";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 
@@ -84,12 +85,16 @@ export default function Home() {
   const hasMore = !loading && jobs.length > 0 && remaining > 0 && jobs.length < OFFSET_CEILING;
 
   return (
+    <SettingsProvider>
     <div className="mx-auto w-full max-w-4xl px-4 pb-20">
-      <header className="pt-6 sm:pt-10">
-        <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Upwork Job Search</h1>
-        <p className="mt-1 text-sm text-muted-foreground sm:text-base">
-          Browse Upwork jobs — no account needed.
-        </p>
+      <header className="flex items-start justify-between gap-3 pt-6 sm:pt-10">
+        <div>
+          <h1 className="text-2xl font-semibold tracking-tight sm:text-3xl">Upwork Job Search</h1>
+          <p className="mt-1 text-sm text-muted-foreground sm:text-base">
+            Browse Upwork jobs — no account needed.
+          </p>
+        </div>
+        <SettingsButton />
       </header>
 
       <div className="mt-4">
@@ -125,5 +130,6 @@ export default function Home() {
         </div>
       )}
     </div>
+    </SettingsProvider>
   );
 }
