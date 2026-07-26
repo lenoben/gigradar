@@ -8,6 +8,17 @@ JSON or CSV.
 python upwork_search.py -q AI --job-type hourly --tier expert --limit 20
 ```
 
+There's also a **mobile-first web UI** (Next.js, in [`web/`](web/)) with a filter panel, "load more"
+pagination, and email job alerts — see [Web UI](#web-ui).
+
+> ### ⚠️ You need a residential IP (or a proxy)
+>
+> Upwork's Cloudflare blocks by **IP reputation**, not just TLS fingerprint. This works from a
+> normal **residential** connection, but **datacenter / VPS / cloud IPs get `403`'d** — and even a
+> single residential IP gets rate-limited under sustained scraping. To run it on a server, point it
+> at a **rotating residential proxy** (e.g. [Webshare](https://www.webshare.io), which has a free
+> tier) via `--proxy` (CLI) or the `UPWORK_PROXY` env (web). See [Caveats](#caveats).
+
 ## How it works
 
 Upwork's public job search is backed by a GraphQL endpoint (`/api/graphql/v1`) protected by
@@ -211,3 +222,9 @@ All optional — the tool is complete as-is. Ordered by value (adoption verified
 The no-account mechanic (Chrome-impersonated token fetch → `visitorJobSearchV1`) is based on
 [asaniczka/Upwork-Job-Scraper](https://github.com/asaniczka/Upwork-Job-Scraper). This tool keeps
 that core and adds the full, reverse-engineered search-filter set with a CLI.
+
+## License & disclaimer
+
+[MIT](LICENSE). **Not affiliated with, endorsed by, or connected to Upwork.** Provided for personal
+and educational use — scraping may conflict with Upwork's Terms of Service, so use it responsibly
+and at your own risk.
