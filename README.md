@@ -1,5 +1,8 @@
 # Upwork Job Search (no account)
 
+[![CI](https://github.com/mishafyi/upwork-jobs/actions/workflows/ci.yml/badge.svg)](https://github.com/mishafyi/upwork-jobs/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Search Upwork jobs from the command line with full filters — **no login, no browser, no API key**.
 A single Python script that talks to Upwork's public *visitor* GraphQL API and returns clean
 JSON or CSV.

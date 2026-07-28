@@ -55,6 +55,7 @@ export function ProposalDialog({ job }: { job: JobResult }) {
 
   // Auto-draft the first time the dialog opens with a configured key.
   React.useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: auto-draft when the dialog opens
     if (open && isConfigured && !text && !busy) void generate();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [open]);

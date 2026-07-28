@@ -72,6 +72,7 @@ export default function Home() {
   );
 
   React.useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: run the initial search on mount
     fetchPage(INITIAL_FILTERS, 0, false);
   }, [fetchPage]);
 

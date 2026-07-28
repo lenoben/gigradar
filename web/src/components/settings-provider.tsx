@@ -48,6 +48,7 @@ export function SettingsProvider({ children }: { children: React.ReactNode }) {
   React.useEffect(() => {
     try {
       const raw = localStorage.getItem(STORAGE_KEY);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: hydrate from localStorage after mount (unavailable during SSR)
       if (raw) setSettings({ ...DEFAULTS, ...(JSON.parse(raw) as Partial<ProposalSettings>) });
     } catch {
       // absent or corrupt storage — fall back to defaults.
@@ -123,6 +124,7 @@ function SettingsDialog({
   const [draft, setDraft] = React.useState<ProposalSettings>(settings);
 
   React.useEffect(() => {
+    // eslint-disable-next-line react-hooks/set-state-in-effect -- intentional: reset the form to saved settings when the dialog opens
     if (open) setDraft(settings);
   }, [open, settings]);
 
