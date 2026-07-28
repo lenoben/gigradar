@@ -9,7 +9,9 @@ python upwork_search.py -q AI --job-type hourly --tier expert --limit 20
 ```
 
 There's also a **mobile-first web UI** (Next.js, in [`web/`](web/)) with a filter panel, "load more"
-pagination, and email job alerts — see [Web UI](#web-ui).
+pagination, email job alerts, and AI-drafted proposals — see [Web UI](#web-ui).
+
+![Upwork Job Search web UI — search bar, filters, job cards with budget/skills, and a "Draft proposal" button](docs/screenshot.png)
 
 > ### ⚠️ You need a residential IP (or a proxy)
 >
@@ -39,13 +41,12 @@ No account is needed because it uses the **visitor** query, which is public. (Th
 Requires Python 3.11+. One dependency: `curl_cffi`.
 
 ```bash
-cd ~/claude_projects/upwork
+git clone https://github.com/mishafyi/upwork-jobs.git
+cd upwork-jobs
 python3 -m venv .venv
 source .venv/bin/activate
 pip install curl_cffi
 ```
-
-(A `.venv` is already set up in this folder.)
 
 Verify it without hitting the network:
 
@@ -83,27 +84,66 @@ python upwork_search.py -q "AI agent" --location "United States" --job-type hour
 
 ## Web UI
 
-A mobile-first web app in [`web/`](web/) wraps the same search with a visual filter UI and
-email job alerts. It's a Next.js app (shadcn/ui) whose API route shells out to this Python tool.
+A mobile-first web app in [`web/`](web/) — visual filters, "load more" pagination, email job alerts,
+and AI-drafted proposals. Next.js 16 + React 19 + shadcn/ui, whose `/api/search` route shells out to
+`upwork_search.py`.
+
+> **Prerequisite:** the web app runs the Python tool, so do the [Setup](#setup) above **first** — it
+> creates the repo-root `.venv` (with `curl_cffi`) that `/api/search` calls. Without it, every search
+> returns a 500. Also needs **Node 20+**.
 
 ```bash
 cd web
-npm install          # first time only
+npm install
 npm run dev          # http://localhost:3000
 ```
 
-- **Search** — query bar + a filters sheet (job type, tier, workload, length, client hires,
-  client location, hourly/fixed budget, contract-to-hire). Results show budget, skills, full
-  description, and link to the Upwork post. Backed by `POST /api/search`.
-- **Email alerts** — "Get email alerts" saves your current filters + email to
-  `web/data/subscriptions.jsonl` and (optionally) emails via [Resend](https://resend.com).
-  Add your key to `web/.env.local` (`RESEND_API_KEY=…`); without it, signups are still stored
-  but no email is sent.
-- **New-job watcher** — `node web/scripts/notify.mjs` (run via cron/launchd) re-runs each
-  subscription's search and emails only jobs posted since last run. The first run per
-  subscription seeds silently (no backfill blast).
+Optional config in `web/.env.local` (copy `web/.env.example` — all optional):
 
-Repeated searches are fast because the Python tool caches the visitor token (`~/claude_projects/upwork/.token_cache.json`, 20-min TTL).
+```bash
+UPWORK_PROXY=http://user:pass@host:port      # residential/rotating proxy (see the ⚠️ warning above)
+RESEND_API_KEY=re_…                           # enables the alert emails
+RESEND_FROM="Jobs <alerts@yourdomain.com>"    # a VERIFIED Resend sender (default: onboarding@resend.dev)
+```
+
+### Features
+
+- **Search + filters** — query bar and a filters sheet (job type, tier, workload, length, client
+  hires, client location, hourly/fixed budget, contract-to-hire); "load more" up to Upwork's
+  ~5000-result cap. Backed by `POST /api/search`.
+- **AI proposal drafter** — the ⚙ settings gear (top-right) takes *your own* [OpenRouter](https://openrouter.ai)
+  key (BYOK) + a short profile. Each job card's **"Draft proposal"** button then streams a tailored
+  cover letter from the job description + your profile. Fully client-side — your key stays in your
+  browser and goes straight to OpenRouter, never through the server. Drafts only (paste into Upwork;
+  submitting needs a login).
+- **Email alerts** — "Get email alerts" saves your filters + email to `web/data/subscriptions.jsonl`
+  and emails a confirmation via [Resend](https://resend.com) (needs `RESEND_API_KEY`; without it,
+  signups are still stored, no email sent).
+- **New-job watcher** — `node web/scripts/notify.mjs`, run on a schedule, re-runs each subscription's
+  search and emails only jobs posted since the last run (first run per subscription seeds silently —
+  no backfill blast). Example cron, every 30 min:
+  ```cron
+  */30 * * * * cd /path/to/upwork-jobs/web && node scripts/notify.mjs >> /tmp/upwork-notify.log 2>&1
+  ```
+
+Repeated searches are fast because the Python tool caches the visitor token (`<repo>/.token_cache.json`, 20-min TTL).
+
+### Self-hosting with Docker
+
+The root `Dockerfile` builds one image with both runtimes (Node + Python + curl_cffi) and the built app:
+
+```bash
+docker build -t upwork-jobs .
+docker run -p 3000:3000 \
+  -e UPWORK_PROXY=http://user:pass@host:port \
+  -e RESEND_API_KEY=re_… \
+  -v upwork-data:/app/web/data \               # persist subscriptions across container replacement
+  upwork-jobs
+```
+
+**Mount a volume on `/app/web/data`** or subscriptions are wiped whenever the container is replaced
+(the container filesystem is ephemeral). For alerts, run `node scripts/notify.mjs` on a schedule
+*inside* the container — a Coolify "Scheduled Task", or a host cron doing `docker exec <container> node scripts/notify.mjs`.
 
 ## Filters
 
