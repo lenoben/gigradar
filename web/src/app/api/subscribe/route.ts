@@ -34,7 +34,47 @@ function issuesToMessage(error: z.ZodError): string {
   return error.issues.map((issue) => `${issue.path.join(".") || "body"}: ${issue.message}`).join("; ");
 }
 
+// ponytail: in-memory per-IP fixed-window limiter — single-instance only (state
+// resets on redeploy, not shared across replicas). This endpoint sends an email
+// to any submitted address, so the throttle stops a script from bombing a target
+// or draining the Resend quota. Move to a shared store (Redis) only if you run
+// multiple replicas or need a hard global cap.
+const RATE_LIMIT = 5; // successful signups per window per IP
+const WINDOW_MS = 15 * 60 * 1000;
+const hits = new Map<string, { count: number; resetAt: number }>();
+
+function checkRate(ip: string): { ok: boolean; retryAfterSec: number } {
+  const now = Date.now();
+  const entry = hits.get(ip);
+  if (!entry || now >= entry.resetAt) {
+    hits.set(ip, { count: 1, resetAt: now + WINDOW_MS });
+    if (hits.size > 5000) for (const [k, v] of hits) if (now >= v.resetAt) hits.delete(k); // bound memory
+    return { ok: true, retryAfterSec: 0 };
+  }
+  entry.count += 1;
+  if (entry.count > RATE_LIMIT) return { ok: false, retryAfterSec: Math.ceil((entry.resetAt - now) / 1000) };
+  return { ok: true, retryAfterSec: 0 };
+}
+
+// Prefer x-real-ip (set by the reverse proxy, not client-spoofable) over the
+// leftmost x-forwarded-for (which the client can forge to rotate the key).
+function clientIp(req: Request): string {
+  const real = req.headers.get("x-real-ip");
+  if (real) return real.trim();
+  const fwd = req.headers.get("x-forwarded-for");
+  if (fwd) return fwd.split(",")[0].trim();
+  return "unknown";
+}
+
 export async function POST(req: Request): Promise<Response> {
+  const rate = checkRate(clientIp(req));
+  if (!rate.ok) {
+    return Response.json(
+      { error: "Too many requests. Please try again in a few minutes." },
+      { status: 429, headers: { "Retry-After": String(rate.retryAfterSec) } },
+    );
+  }
+
   let body: unknown;
   try {
     body = await req.json();

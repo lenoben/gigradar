@@ -26,6 +26,10 @@ const RESEND_ENDPOINT = "https://api.resend.com/emails";
 const EXEC_TIMEOUT_MS = 40_000;
 const MAX_BUFFER = 20 * 1024 * 1024;
 const SNIPPET_LEN = 200;
+// Cap the per-subscription "seen" history so the store doesn't grow forever.
+// Upwork sorts by recency, so old jobs age off and won't reappear — keeping the
+// most recent N is plenty to avoid re-alerting. ~2000 short URLs ≈ 100 KB/sub.
+const SEEN_CAP = 2000;
 
 // --- minimal .env loader (real process.env wins, then .env.local, then .env) ---
 function loadEnv(file) {
@@ -180,7 +184,10 @@ async function main() {
       }
       await sendAlert(apiKey, from, sub.email, newJobs);
       // Only record as seen after a successful send, so a failed email retries.
-      sub.seenUrls = Array.from(new Set([...(sub.seenUrls ?? []), ...jobs.map((j) => j.url).filter(Boolean)]));
+      // Current (most recent) URLs first, then prior history, deduped and capped.
+      sub.seenUrls = Array.from(
+        new Set([...jobs.map((j) => j.url).filter(Boolean), ...(sub.seenUrls ?? [])]),
+      ).slice(0, SEEN_CAP);
       changed = true;
       console.log(`[notify] ${sub.email}: ${newJobs.length} new of ${jobs.length} matched -> emailed`);
     } catch (err) {

@@ -55,7 +55,7 @@ export async function streamProposal(input: DraftProposalInput): Promise<void> {
     headers: {
       Authorization: `Bearer ${apiKey}`,
       "Content-Type": "application/json",
-      "HTTP-Referer": typeof location !== "undefined" ? location.origin : "https://upwork.myclaudeapp.com",
+      "HTTP-Referer": typeof location !== "undefined" ? location.origin : "https://github.com/mishafyi/upwork-jobs",
       "X-Title": "Upwork Job Search",
     },
     body: JSON.stringify({
