@@ -71,11 +71,17 @@ class FakeNotifier:
     def __init__(self, fail: bool) -> None:
         self.fail = fail
         self.sent: list[tuple[str, str]] = []
+        self.batches: list[list[str]] = []  # job ids per notify_jobs call
 
     def notify(self, title: str, message: str) -> None:
         if self.fail:
             raise RuntimeError("toast broke")
         self.sent.append((title, message))
+
+    def notify_jobs(self, jobs: list[Job]) -> None:
+        if self.fail:
+            raise RuntimeError("telegram broke")
+        self.batches.append([j.url.rsplit("/", 1)[-1] for j in jobs])
 
 
 class WatchTest(unittest.TestCase):
@@ -97,24 +103,15 @@ class WatchTest(unittest.TestCase):
     def test_first_run_seeds_silently(self) -> None:
         notifier = FakeNotifier(False)
         code, _ = self.run_once({"a": [job("~1"), job("~2")], "b": [job("~2"), job("~3")]}, notifier)
-        self.assertEqual((code, seen_count(self.conn), notifier.sent), (EXIT_OK, 3, []))
+        self.assertEqual((code, seen_count(self.conn), notifier.batches), (EXIT_OK, 3, []))
 
     def test_new_jobs_notified_once_and_marked(self) -> None:
         mark_seen(self.conn, [job("~1")], NOW)
         notifier = FakeNotifier(False)
         code, _ = self.run_once({"a": [job("~1"), job("~2")], "b": [job("~3")]}, notifier)
-        self.assertEqual(code, EXIT_OK)
-        self.assertEqual(notifier.sent[0][0], "gigradar: 2 new jobs")
-        self.assertIn("job ~2", notifier.sent[0][1])
+        self.assertEqual((code, notifier.batches), (EXIT_OK, [["~2", "~3"]]))
         code, _ = self.run_once({"a": [job("~2")], "b": [job("~3")]}, notifier)
-        self.assertEqual(len(notifier.sent), 1)  # nothing new the second time
-
-    def test_many_new_jobs_are_summarized(self) -> None:
-        mark_seen(self.conn, [job("~0")], NOW)
-        notifier = FakeNotifier(False)
-        self.run_once({"a": [job(f"~{i}") for i in range(1, 6)], "b": []}, notifier)
-        self.assertEqual(notifier.sent[0][0], "gigradar: 5 new jobs")
-        self.assertIn("…and 2 more", notifier.sent[0][1])
+        self.assertEqual(len(notifier.batches), 1)  # nothing new the second time
 
     def test_failed_notification_does_not_mark_seen(self) -> None:
         mark_seen(self.conn, [job("~1")], NOW)
@@ -128,7 +125,7 @@ class WatchTest(unittest.TestCase):
         code, searcher = self.run_once({"a": [job("~2")], "b": SearchBlocked("HTTP 403")}, notifier)
         self.assertEqual(code, EXIT_STOPPED)
         self.assertEqual(searcher.requests, ["a", "b"])
-        self.assertEqual(notifier.sent[0][0], "gigradar: 1 new job")
+        self.assertEqual(notifier.batches, [["~2"]])
 
     def test_stoprun_on_first_search_makes_no_more_requests(self) -> None:
         mark_seen(self.conn, [job("~1")], NOW)
