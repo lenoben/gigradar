@@ -1,7 +1,8 @@
 """Job scoring against my profile: a Scorer gives each job a 0-100 score plus a short reason.
 
 RuleScorer ("rules") is the explainable layer:
-- hard rules: an excluded keyword, a disallowed tier, or pay below my minimum scores 0.
+- hard rules: an excluded keyword (in title or skills), a disallowed tier, or pay below my
+  minimum scores 0.
   Missing data passes (no rate/budget/tier given is not a bad job);
 - skill overlap: job skills that are also in [profile].skills, saturating at N matches.
 It's a usable baseline on its own and the rule/skill input for the embedding scorer.
@@ -80,7 +81,7 @@ def keyword_pattern(keyword: str) -> re.Pattern[str]:
 
 class RuleScorer:
     name = "rules"
-    version = "1"
+    version = "2"  # 2: exclude_keywords match title + skills, no longer the description
 
     def __init__(self, skill_saturation: int) -> None:
         if skill_saturation < 1:
@@ -126,8 +127,10 @@ class _CompiledProfile:
         self.tiers = {TIERS[t] for t in profile.tiers}
 
     def reject_reason(self, job: Job) -> str | None:
-        """The first hard rule that fires, in order: keyword, tier, hourly, fixed."""
-        text = f"{job.title}\n{job.description}"
+        """The first hard rule that fires, in order: keyword, tier, hourly, fixed.
+        Keywords are matched in title and skills only: descriptions mention tools in passing
+        ("migrating away from WordPress"); a job that really needs one lists it as a skill."""
+        text = f"{job.title}\n{job.skills}"
         for keyword, pattern in self.keywords:
             if pattern.search(text):
                 return f'✗ excluded keyword "{keyword}"'
@@ -191,7 +194,7 @@ def scale(value: float, low: float, high: float) -> float:
 
 class EmbeddingScorer:
     name = "embed"
-    version = "1"
+    version = "2"  # 2: uses RuleScorer v2 (keyword rule changed)
 
     def __init__(self, embedder: Embedder, rules: RuleScorer, cache: EmbeddingCache,
                  weight_semantic: float, weight_skills: float, cos_low: float, cos_high: float) -> None:

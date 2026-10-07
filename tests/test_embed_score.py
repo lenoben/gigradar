@@ -82,7 +82,7 @@ class EmbeddingScorerTest(unittest.TestCase):
         self.assertEqual((r1.section, r2.section), ("Rust backend", "Frontend"))
         self.assertEqual(r1.score.reason, "Rust backend · matched: Rust")
         self.assertEqual(r2.score.reason, "Frontend")  # no matched skills: heading only
-        self.assertEqual((r1.score.scorer, r1.score.version), ("embed", "1"))
+        self.assertEqual((r1.score.scorer, r1.score.version), ("embed", "2"))
 
     def test_weighted_mean(self) -> None:
         job = make_job(skills="Rust, PostgreSQL, Docker")  # overlap 2/3
@@ -96,7 +96,8 @@ class EmbeddingScorerTest(unittest.TestCase):
         self.assertEqual(r.score.value, round(100 * scale(r.cosine, 0.0, 1.0)))
 
     def test_rejected_is_zero_even_with_a_strong_match(self) -> None:
-        job = make_job(title="Rust axum backend", description="rust axum tokio api services backend WordPress")
+        job = make_job(title="Rust axum backend", description="rust axum tokio api services backend",
+                       skills="Rust, WordPress")
         [r] = scorer(FakeEmbedder("fake")).evaluate([job], PROFILE2)
         self.assertGreater(r.cosine, 0.5)
         self.assertEqual((r.score.value, r.score.reason), (0, '✗ excluded keyword "WordPress"'))

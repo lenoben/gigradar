@@ -89,18 +89,18 @@ class RuleScorerTest(unittest.TestCase):
 
     def test_score_identity(self) -> None:
         score = one(make_job())
-        self.assertEqual((score.scorer, score.version), ("rules", "1"))
+        self.assertEqual((score.scorer, score.version), ("rules", "2"))
 
     def test_hard_rules_fire(self) -> None:
         cases = {
-            "keyword": (make_job(description="Migrate our WordPress blog"), '✗ excluded keyword "WordPress"'),
+            "keyword in skills": (make_job(skills="WordPress, PHP"), '✗ excluded keyword "WordPress"'),
             "keyword in title": (make_job(title="unpaid test task"), '✗ excluded keyword "unpaid test"'),
             "tier": (make_job(tier="EntryLevel"), "✗ tier entry not wanted"),
             "hourly max": (make_job(hourly_min="20.0", hourly_max="45.0"), "✗ hourly up to $45 < min $50"),
             "hourly min only": (make_job(hourly_min="30.0", hourly_max=None), "✗ hourly up to $30 < min $50"),
             "fixed": (make_job(job_type="FIXED", fixed_budget="300.0", hourly_min=None, hourly_max=None),
                       "✗ fixed $300 < min $1,000"),
-            "first rule wins": (make_job(tier="EntryLevel", hourly_max="10.0", description="C++ job"),
+            "first rule wins": (make_job(tier="EntryLevel", hourly_max="10.0", title="C++ job"),
                                 '✗ excluded keyword "C++"'),
         }
         for name, (job, reason) in cases.items():
@@ -120,6 +120,8 @@ class RuleScorerTest(unittest.TestCase):
             "no job type": make_job(job_type=None, hourly_max="5.0"),
             "lowercase type, ok rate": make_job(job_type="hourly", hourly_max="50.0"),
             "fixed at minimum": make_job(job_type="FIXED", fixed_budget="1000"),
+            # v2: keywords in the description don't reject (mentions in passing, negations)
+            "keyword only in description": make_job(description="Migrating away from WordPress; no C++."),
         }
         for name, job in cases.items():
             with self.subTest(name):
@@ -127,7 +129,7 @@ class RuleScorerTest(unittest.TestCase):
 
     def test_rules_off_when_not_configured(self) -> None:
         open_profile = replace(PROFILE, min_hourly=None, min_fixed=None, tiers=[], exclude_keywords=[])
-        job = make_job(tier="EntryLevel", hourly_max="5.0", description="WordPress")
+        job = make_job(tier="EntryLevel", hourly_max="5.0", title="WordPress")
         self.assertGreater(one(job, open_profile).value, 0)
 
     def test_evaluate_exposes_parts(self) -> None:
@@ -156,11 +158,12 @@ class SaveScoresTest(unittest.TestCase):
         jobs = [make_job(), make_job(url="https://www.upwork.com/jobs/~02"), make_job(url="")]
         scores = RuleScorer(3).score(jobs, PROFILE)
         self.assertEqual(save_scores(self.conn, jobs, scores, NOW), 2)  # id-less job skipped
-        save_scores(self.conn, jobs[:1], [Score(90, "better", "rules", "1")], NOW)
-        self.assertEqual(self.rows(), [("~01", "rules", "1", 90, "better"),
-                                       ("~02", "rules", "1", 67, "matched: Rust, PostgreSQL")])
-        save_scores(self.conn, jobs[:1], [Score(10, "v2 logic", "rules", "2")], NOW)
-        self.assertEqual(len(self.rows()), 3)  # other version kept alongside
+        version = RuleScorer.version
+        save_scores(self.conn, jobs[:1], [Score(90, "better", "rules", version)], NOW)  # same key: replaced
+        self.assertEqual(self.rows(), [("~01", "rules", version, 90, "better"),
+                                       ("~02", "rules", version, 67, "matched: Rust, PostgreSQL")])
+        save_scores(self.conn, jobs[:1], [Score(10, "old logic", "rules", "0")], NOW)
+        self.assertEqual(len(self.rows()), 3)  # another version is kept alongside
 
     def test_value_range_enforced(self) -> None:
         with self.assertRaises(sqlite3.IntegrityError):

@@ -46,7 +46,7 @@ use_proxy = false
 # min_hourly = 50         # USD; hourly jobs whose max rate is below this
 # min_fixed = 1000        # USD; fixed jobs whose budget is below this
 # tiers = ["intermediate", "expert"]   # allowed tiers; omit or [] = any
-# exclude_keywords = ["WordPress", "unpaid test"]   # in title or description
+# exclude_keywords = ["WordPress", "unpaid test"]   # in title or skills (not the description)
 
 # Scoring settings (all optional; shown with their defaults). Needs: pip install -r requirements-scoring.txt
 # and the model downloaded once: python -m gigradar.embed --download
