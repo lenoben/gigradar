@@ -22,6 +22,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 
+from gigradar.jobfields import format_money, parse_amount
 from upwork_search import Job
 
 API = "https://api.telegram.org"
@@ -64,13 +65,8 @@ def _cut(text: str, limit: int) -> str:
 
 
 def _money(value: str | None) -> str | None:
-    try:
-        amount = float(value) if value not in (None, "") else None
-    except ValueError:
-        return None
-    if amount is None or amount <= 0:
-        return None
-    return f"${amount:,.0f}" if amount == int(amount) else f"${amount:,.2f}"
+    amount = parse_amount(value)
+    return None if amount is None else format_money(amount)
 
 
 def pay_line(job: Job) -> str:

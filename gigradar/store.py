@@ -23,6 +23,7 @@ from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
+from gigradar.score import Score
 from upwork_search import Job
 
 SCHEMA_VERSION = 2
@@ -198,6 +199,18 @@ def record_searches(conn: sqlite3.Connection, results: Sequence[tuple[str, list[
             "INSERT OR IGNORE INTO job_search VALUES (?, ?, ?)",
             [(jid, name, stamp) for name, jobs in results for job in jobs
              if (jid := job_id(job)) is not None])
+
+
+def save_scores(conn: sqlite3.Connection, jobs: Sequence[Job], scores: Sequence[Score], now: datetime) -> int:
+    """Store one score per job (same order); the newest per (job, scorer, version) wins.
+    Jobs without an id are skipped. Returns rows written."""
+    if len(jobs) != len(scores):
+        raise ValueError(f"{len(jobs)} jobs but {len(scores)} scores")
+    rows = [(jid, s.scorer, s.version, s.value, s.reason, now.isoformat())
+            for job, s in zip(jobs, scores) if (jid := job_id(job)) is not None]
+    with conn:
+        conn.executemany("INSERT OR REPLACE INTO scores VALUES (?, ?, ?, ?, ?, ?)", rows)
+    return len(rows)
 
 
 def _insert_seen(conn: sqlite3.Connection, jobs: list[Job], now: datetime) -> int:
