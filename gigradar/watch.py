@@ -18,6 +18,7 @@ import os
 import sys
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from gigradar.config import Config, ConfigError, SearchSpec, default_paths, load_config, load_dotenv
@@ -86,12 +87,33 @@ def build_searcher(cfg: Config, notifier: Notifier) -> Searcher:
     return CurlSearcher(build_provider(cfg.token_sources, cfg.proxy), cfg.proxy, UPSTREAM_SEARCH)
 
 
+def setup_logging(log_file: Path | None) -> None:
+    """Log to a rotating file (scheduled runs under pythonw.exe have no stderr) or stderr.
+    pywebview's own logger goes to the same place: it reports WebView2 startup failures
+    there, and under pythonw its default stderr handler silently drops them. Must run
+    before `import webview`, whose setup skips adding a handler if one exists."""
+    if log_file is None:
+        handler: logging.Handler = logging.StreamHandler(sys.stderr)
+    else:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s"))
+    for name in ("gigradar", "pywebview"):
+        logger = logging.getLogger(name)
+        logger.handlers[:] = [handler]
+        logger.setLevel(logging.INFO)
+        logger.propagate = False
+
+
 def main(argv: Sequence[str]) -> int:
     default_toml, env_path = default_paths()
     parser = argparse.ArgumentParser(prog="python -m gigradar.watch", description=__doc__.split("\n")[0])
     parser.add_argument("--config", type=Path, default=default_toml, help="gigradar.toml path")
+    parser.add_argument("--log-file", type=Path, default=None,
+                        help="append logs here (rotating, 1 MB x 3) instead of stderr; needed under pythonw.exe")
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
+    setup_logging(args.log_file)
+    log.info("run start")  # vs. Task Scheduler's start time: shows interpreter startup lag
 
     try:
         load_dotenv(env_path, os.environ)

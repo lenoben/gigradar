@@ -1,5 +1,6 @@
 """Run: .venv/Scripts/python -m unittest discover -s tests   (fake searcher: no network)"""
 
+import logging
 import tempfile
 import threading
 import unittest
@@ -23,6 +24,16 @@ query = "python"
 name = "b"
 query = "rust"
 """
+
+
+def reset_logging() -> None:
+    """Close and detach file handlers so Windows can delete the temp dir and later tests
+    don't write to a deleted file."""
+    for name in ("gigradar", "pywebview"):
+        logger = logging.getLogger(name)
+        for handler in logger.handlers:
+            handler.close()
+        logger.handlers[:] = []
 
 
 def job(cipher: str) -> Job:
@@ -130,6 +141,19 @@ class WatchTest(unittest.TestCase):
 
     def test_main_config_error_exit_code(self) -> None:
         self.assertEqual(main(["--config", str(self.dir / "missing.toml")]), EXIT_CONFIG)
+
+    def test_log_file_is_created_and_written(self) -> None:
+        log_file = self.dir / "logs" / "gigradar.log"
+        try:
+            self.assertEqual(main(["--config", str(self.dir / "missing.toml"), "--log-file", str(log_file)]),
+                             EXIT_CONFIG)
+            text = log_file.read_text(encoding="utf-8")
+            self.assertIn("run start", text)
+            self.assertIn("ERROR [gigradar] config:", text)
+            logging.getLogger("pywebview").error("WebView2 initialization failed")  # captured too
+            self.assertIn("[pywebview] WebView2 initialization failed", log_file.read_text(encoding="utf-8"))
+        finally:
+            reset_logging()
 
 
 if __name__ == "__main__":
