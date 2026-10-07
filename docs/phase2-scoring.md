@@ -1,6 +1,6 @@
 # Phase 2: job scoring against my profile
 
-Status: **plan approved (2026-10-07); steps 1–2 built.** Branch: `feat/scoring`.
+Status: **plan approved (2026-10-07); steps 1–5 (part A) built; 1–2 merged to main.** Branch: `feat/scoring`.
 Start here in a new session, together with `CLAUDE.local.md` (Phase 1 architecture + repo rules).
 
 ## Goal
@@ -192,16 +192,65 @@ SQLite** with a scorer name, so an MCP-written score is just another scorer.
    adopted as established (v1 didn't record which ran). Seeding rule: a new job alerts if an
    established search found it, else it is seeded silently; seeding + search registration
    commit before notifying. Store open/migration errors are logged and exit 1.
-3. `RuleScorer`: hard rules (missing fields pass) + skill overlap, with reasons.
-4. `EmbeddingScorer` with fastembed (verify versions first) + `--download` setup command.
+3. `RuleScorer`: hard rules (missing fields pass) + skill overlap, with reasons. **Built.**
+   `gigradar/score.py` (`Score`, `Scorer`, `RuleScorer` "rules" v1, `RuleResult` for step 4) and
+   `gigradar/jobfields.py` (`parse_amount`: None/""/non-numeric/<=0 = missing; shared with the
+   Telegram pay line). Rules in order: exclude keyword (whole term, case-insensitive, title +
+   description), tier, hourly (highest rate offered), fixed budget. Overlap = min(matched, 3)/3;
+   no skills listed = `None` (standalone 50). `store.save_scores` (INSERT OR REPLACE).
+   Field formats verified on the live store (64 jobs): job_type HOURLY/FIXED only, hourly jobs
+   always have min+max, fixed always a budget, 2 jobs without skills, no commas in skill labels.
+   Follow-up: keywords also match negations ("no WordPress"); revisit only if labels show false rejects.
+4. `EmbeddingScorer` with fastembed (verify versions first) + `--download` setup command. **Built.**
+   Re-checked 2026-10-07: fastembed **0.9.0** appeared that day (16:38 UTC, same deps; drops the
+   GCS fallback URLs; bge-small entry and `local_files_only` unchanged). Pinned **0.8.1** in
+   `requirements-scoring.txt` (2 weeks without a fix release); re-check at the step 5 merge.
+   `gigradar/embed.py`: `Embedder` protocol, `FastEmbedder` (lazy import; offline = `local_files_only`
+   + `HF_HUB_OFFLINE=1`; `ValueError` -> `EmbedderError` with a "--download" hint),
+   `python -m gigradar.embed --download` (download, then verify an offline load).
+   `EmbeddingScorer` ("embed" v1) in `score.py`: best section by cosine (stdlib math on normalized
+   vectors), `scale(cos, cos_low, cos_high)`, weighted mean with skill overlap (semantic only if
+   the job lists no skills), 0 + rule reason if rejected; reason = `<section> · matched: ...`.
+   Job vectors cached per (job_id, model) via `store.SqliteEmbeddingCache` (float32 LE BLOB).
+   `[scoring]` table: model, model_dir, weights, cos_low/cos_high (placeholders 0.45/0.80),
+   skill_saturation. `python -m gigradar.score --dry-run`: stored jobs read-only (`mode=ro` +
+   `query_only`), cosine distribution, top/bottom/rejected lists.
+   Dev venv: the worktree has its own `.venv` (same Python 3.12.0 as live) = live packages +
+   fastembed; installing fastembed only ADDS 28 packages, no live package changes version.
+   First live dry run (68 stored jobs): best-section cosine 0.647–0.845 (median 0.722) ->
+   calibrated `cos_low = 0.65`, `cos_high = 0.82`. Speed ~520 ms per 512-token text on the
+   4-core CPU (batch size irrelevant); fine because each job is embedded once (cache) and only
+   new jobs are scored per run. Profile section vectors are cached too (key = "profile:" +
+   hash of the section text, per model). 2 of 3 rejects were incidental "WordPress" mentions in
+   descriptions -> RuleScorer v2 (EmbeddingScorer v2): exclude_keywords match title + skills
+   only. Deferred to step 6: embed only the first ~200 words (~3-4x faster), judged on labels.
 5. Wire scoring into `watch.py` + notifier output (score line, sorted digest), shadow mode.
+   **Built (part A).** `notify_jobs(alerts)` with `Alert(job, score | None)`; `watch.process`
+   scores only the jobs it alerts (not seeded ones), saves the scores, sorts best first,
+   notifies, marks seen. Nothing filtered (`min_score` comes with step 6). The model loads
+   lazily (offline) on the first scoring call, so runs without new jobs never load it.
+   Failure policy: any scoring error -> logged with traceback, the jobs go out unscored
+   ("Score n/a"), no status message. Timing: scoring runs after `searcher.run()` returned, i.e.
+   outside the WebView watchdog; `SCORING_BUDGET_S = 60`, checked between chunks of 10 jobs,
+   the rest goes out unscored. Worst case with 2 searches: 440 s WebView hard limit + ~67 s
+   scoring + ~80 s Telegram (5 briefs at the 15 s timeout) + ~5 s = ~592 s, under 10 min; the
+   task's time limit is raised from 10 to 15 min for margin (re-register after the merge). Output: Telegram brief line 2 `<b>82</b> · <section> · matched: …` (<= 160 chars),
+   digest lines `• <b>82</b> <title link> — <pay>`, toast `N new jobs (top 82)` with scored
+   titles, log one line per alert.
 6. Labeling CLI + `--eval`; tune weights/threshold on ~50 labels.
 7. Optional `LLMScorer` (own branch; provider decided then).
 
 Live checks (user runs them): step 4 model download + one scoring dry run on stored jobs;
 step 5 one scheduled run with scores in Telegram; step 6 labeling session.
 
-## Constraints (unchanged)
+## Constraints
 
 No auto-submitting proposals, no per-minute polling, personal volume only. No secrets in the
 TOML. Never commit `profile.md`, `profile_sources/`, `gigradar.toml`, `.env`, `data/`, models or logs.
+
+**Personal data lives only in gitignored files; committed files stay generic**, so anyone who
+clones gigradar gets their own app. Personal: `gigradar.toml` (searches, profile settings), `.env`
+(bot token, chat id, proxy), `profile.md`, `profile_sources/`, `data/`, `logs/`, models (outside
+the repo). Committed code, docs, `*.example.*` templates and tests use only generic examples and
+placeholders: no machine paths, user names, bot names, chat ids, tokens, real searches or real
+profile text. Tests use temp dirs and invented jobs.

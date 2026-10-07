@@ -10,7 +10,8 @@
       - runs the repo's .venv\Scripts\pythonw.exe (no console window flashing) at normal priority
         (Task Scheduler's default below-normal priority made WebView2 start too slowly)
       - logs to <repo>\logs\gigradar.log (rotating, gitignored)
-      - never overlaps itself (a run still going -> the next start is skipped), 10-min time limit
+      - never overlaps itself (a run still going -> the next start is skipped), 15-min time limit
+        (worst case search + scoring + Telegram is ~10 min; see SCORING_BUDGET_S in watch.py)
       - a run missed while the PC was off/asleep starts once when it's available again (no burst)
     No admin rights needed. Re-running -Register replaces the existing task.
 
@@ -93,7 +94,7 @@ switch ($PSCmdlet.ParameterSetName) {
         # -Priority 4 = normal. Task Scheduler's default 7 (below normal, plus low I/O/memory priority)
         # delayed interpreter startup by ~40 s and let WebView2 miss pywebview's 20 s window-start wait.
         $settings = New-ScheduledTaskSettingsSet -Priority 4 -MultipleInstances IgnoreNew `
-            -ExecutionTimeLimit (New-TimeSpan -Minutes 10) -StartWhenAvailable `
+            -ExecutionTimeLimit (New-TimeSpan -Minutes 15) -StartWhenAvailable `
             -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries
 
         Register-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -Action $action -Trigger $trigger `

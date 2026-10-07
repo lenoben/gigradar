@@ -1,7 +1,9 @@
 """Notifiers: how gigradar tells you something.
 
-Two kinds of message: `notify_jobs(jobs)` for new jobs (each channel formats them its own
-way) and `notify(title, message)` for status messages such as "click needed".
+Two kinds of message: `notify_jobs(alerts)` for new jobs (each channel formats them its own
+way) and `notify(title, message)` for status messages such as "click needed". An Alert is a
+job plus its score, or None when unscored (scoring off or failed: shown as "Score n/a").
+Alerts arrive sorted (best score first); channels keep that order.
 
 LogNotifier is always on. ToastNotifier (Windows toast) needs the optional `windows-toasts`
 package (requirements-toast.txt). TelegramNotifier (gigradar.telegram) uses the stdlib only.
@@ -11,15 +13,24 @@ from __future__ import annotations
 
 import logging
 import sys
+from dataclasses import dataclass
 from typing import Protocol
 
 from gigradar.config import Config, ConfigError
+from gigradar.score import Score
 from upwork_search import Job
 
 log = logging.getLogger("gigradar")
 
 APP_NAME = "gigradar"
 MAX_TITLES = 3
+SCORE_CHARS = 160  # score line incl. reason; matched-skill lists can be long
+
+
+@dataclass(frozen=True)
+class Alert:
+    job: Job
+    score: Score | None  # None = unscored
 
 
 class Notifier(Protocol):
@@ -27,24 +38,38 @@ class Notifier(Protocol):
         """Deliver one status message. Raise on failure; the caller decides what that means."""
         ...
 
-    def notify_jobs(self, jobs: list[Job]) -> None:
-        """Announce new jobs (non-empty). Raise on failure: the jobs then stay unseen and are re-sent."""
+    def notify_jobs(self, alerts: list[Alert]) -> None:
+        """Announce new jobs (non-empty, sorted). Raise on failure: they then stay unseen and are re-sent."""
         ...
 
 
-def summarize_jobs(jobs: list[Job]) -> tuple[str, str]:
-    """Short (title, message) for small surfaces: count + first few titles."""
-    titles = "\n".join(f"• {job.title}" for job in jobs[:MAX_TITLES])
-    more = f"\n…and {len(jobs) - MAX_TITLES} more" if len(jobs) > MAX_TITLES else ""
-    return f"gigradar: {len(jobs)} new job{'s' if len(jobs) != 1 else ''}", titles + more
+def score_text(score: Score | None) -> str:
+    """'82 · Full-stack web · matched: Next.js, React' (cut at SCORE_CHARS) or 'Score n/a'."""
+    if score is None:
+        return "Score n/a"
+    text = f"{score.value} · {score.reason}"
+    return text if len(text) <= SCORE_CHARS else text[:SCORE_CHARS - 1].rstrip(" ,·") + "…"
+
+
+def summarize_alerts(alerts: list[Alert]) -> tuple[str, str]:
+    """Short (title, message) for small surfaces: count (+ best score) and the first few titles."""
+    scored = [a.score.value for a in alerts if a.score is not None]
+    top = f" (top {max(scored)})" if scored else ""
+    count = f"gigradar: {len(alerts)} new job{'s' if len(alerts) != 1 else ''}{top}"
+    titles = "\n".join(f"• {a.score.value} {a.job.title}" if a.score else f"• {a.job.title}"
+                       for a in alerts[:MAX_TITLES])
+    more = f"\n…and {len(alerts) - MAX_TITLES} more" if len(alerts) > MAX_TITLES else ""
+    return count, titles + more
 
 
 class LogNotifier:
     def notify(self, title: str, message: str) -> None:
         log.info("%s: %s", title, message)
 
-    def notify_jobs(self, jobs: list[Job]) -> None:
-        self.notify(*summarize_jobs(jobs))
+    def notify_jobs(self, alerts: list[Alert]) -> None:
+        self.notify(*summarize_alerts(alerts))
+        for alert in alerts:
+            log.info("  %s | %s", score_text(alert.score), alert.job.title)
 
 
 class ToastNotifier:
@@ -61,8 +86,8 @@ class ToastNotifier:
     def notify(self, title: str, message: str) -> None:
         self._toaster.show_toast(self._toast_cls(text_fields=[title, message]))
 
-    def notify_jobs(self, jobs: list[Job]) -> None:
-        self.notify(*summarize_jobs(jobs))
+    def notify_jobs(self, alerts: list[Alert]) -> None:
+        self.notify(*summarize_alerts(alerts))
 
 
 class MultiNotifier:
@@ -76,8 +101,8 @@ class MultiNotifier:
     def notify(self, title: str, message: str) -> None:
         self._each(lambda n: n.notify(title, message))
 
-    def notify_jobs(self, jobs: list[Job]) -> None:
-        self._each(lambda n: n.notify_jobs(jobs))
+    def notify_jobs(self, alerts: list[Alert]) -> None:
+        self._each(lambda n: n.notify_jobs(alerts))
 
     def _each(self, call) -> None:
         failures = []

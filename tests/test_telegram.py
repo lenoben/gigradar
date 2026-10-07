@@ -5,8 +5,10 @@ import re
 import unittest
 import urllib.parse
 
+from gigradar.notify import SCORE_CHARS, Alert
+from gigradar.score import Score
 from gigradar.telegram import (DIGEST_THRESHOLD, MAX_CHARS, SEND_PAUSE_S, TelegramError, TelegramNotifier,
-                               format_brief, format_digest, pay_line)
+                               _sample_alert, format_brief, format_digest, pay_line)
 from upwork_search import Job
 
 TOKEN = "123456:SECRET-token_value"
@@ -18,6 +20,14 @@ def job(cipher: str, **overrides) -> Job:
                   skills="Python, Rust", description="Build things.")
     fields.update(overrides)
     return Job(**fields)
+
+
+def alert(cipher: str, score: Score | None = None, **overrides) -> Alert:
+    return Alert(job(cipher, **overrides), score)
+
+
+def score(value: int, reason: str) -> Score:
+    return Score(value, reason, "embed", "2")
 
 
 class FakePost:
@@ -55,31 +65,31 @@ class FormatTest(unittest.TestCase):
         self.assertEqual(pay_line(job("~1", job_type=None, tier=None)), "")
 
     def test_brief_content_and_escaping(self) -> None:
-        text = format_brief(job("~1", title="AI <agent> & tools", skills="C++, <b>", description="Use <script> & more"))
-        self.assertTrue(text.startswith("<b>AI &lt;agent&gt; &amp; tools</b>\nHourly $50–80/hr · Expert"))
+        text = format_brief(alert("~1", title="AI <agent> & tools", skills="C++, <b>", description="Use <script> & more"))
+        self.assertTrue(text.startswith("<b>AI &lt;agent&gt; &amp; tools</b>\nScore n/a\nHourly $50–80/hr · Expert"))
         self.assertIn("<i>C++, &lt;b&gt;</i>", text)
         self.assertIn("Use &lt;script&gt; &amp; more", text)
         self.assertIn('<a href="https://www.upwork.com/jobs/~1">Open on Upwork</a>', text)
         self.assertTrue(balanced(text))
 
     def test_brief_description_cut_at_word_boundary(self) -> None:
-        text = format_brief(job("~1", description="word " * 200))
+        text = format_brief(alert("~1", description="word " * 200))
         body = text.split("\n\n")[1]
         self.assertTrue(body.endswith("word…"))
         self.assertLessEqual(len(body), 301)
 
     def test_brief_never_exceeds_limit_even_when_escaping_explodes(self) -> None:
-        nasty = job("~1", title="&" * 1000, skills="&" * 1000, description="& " * 5000)
+        nasty = alert("~1", title="&" * 1000, skills="&" * 1000, description="& " * 5000)
         text = format_brief(nasty)
         self.assertLessEqual(len(text), MAX_CHARS)
         self.assertTrue(balanced(text))
 
     def test_href_is_attribute_escaped(self) -> None:
-        text = format_brief(job("~1", url='https://x/"><script>'))
+        text = format_brief(alert("~1", url='https://x/"><script>'))
         self.assertIn('href="https://x/&quot;&gt;&lt;script&gt;"', text)
 
     def test_digest_splits_on_lines_within_limit(self) -> None:
-        jobs = [job(f"~{i:03d}", title=f"Job {i} " + "x" * 150) for i in range(60)]
+        jobs = [alert(f"~{i:03d}", title=f"Job {i} " + "x" * 150) for i in range(60)]
         messages = format_digest(jobs)
         self.assertGreater(len(messages), 1)
         self.assertTrue(messages[0].startswith("<b>gigradar: 60 new jobs</b>"))
@@ -90,11 +100,47 @@ class FormatTest(unittest.TestCase):
         self.assertEqual(sum(joined.count(f"jobs/~{i:03d}\"") for i in range(60)), 60)
 
 
+    def test_brief_score_line(self) -> None:
+        text = format_brief(alert("~1", score(82, "Full-stack web · matched: Next.js & <React>")))
+        lines = text.split("\n")
+        self.assertEqual(lines[1], "<b>82</b> · Full-stack web · matched: Next.js &amp; &lt;React&gt;")
+        self.assertEqual(lines[2], "Hourly $50–80/hr · Expert")
+        self.assertTrue(balanced(text))
+
+    def test_brief_long_reason_capped_and_rejects_shown(self) -> None:
+        long = score(91, "Full-stack web · matched: " + ", ".join(f"Skill{i}" for i in range(60)))
+        line = format_brief(alert("~1", long)).split("\n")[1]
+        self.assertTrue(line.endswith("…"))
+        self.assertLessEqual(len(line) - len("<b></b>"), SCORE_CHARS)
+        rejected = format_brief(alert("~1", score(0, '✗ excluded keyword "Shopify"')))
+        self.assertIn('<b>0</b> · ✗ excluded keyword "Shopify"', rejected)
+
+    def test_brief_with_huge_escaped_score_stays_in_limit(self) -> None:
+        text = format_brief(alert("~1", score(50, "&" * 1000), title="&" * 1000, skills="&" * 1000,
+                                  description="& " * 5000))
+        self.assertLessEqual(len(text), MAX_CHARS)
+        self.assertTrue(balanced(text))
+
+    def test_digest_shows_scores_in_given_order(self) -> None:
+        alerts = [alert("~1", score(90, "a")), alert("~2", score(40, "b")), alert("~3", None, job_type=None, tier=None)]
+        [message] = format_digest(alerts)
+        lines = message.split("\n")
+        self.assertTrue(lines[1].startswith('• <b>90</b> <a href="https://www.upwork.com/jobs/~1">'))
+        self.assertTrue(lines[2].startswith('• <b>40</b> <a href="https://www.upwork.com/jobs/~2">'))
+        self.assertTrue(lines[3].startswith('• n/a <a href="https://www.upwork.com/jobs/~3">'))
+        self.assertTrue(balanced(message))
+
+    def test_sample_alert_formats(self) -> None:
+        text = format_brief(_sample_alert())
+        self.assertIn("<b>82</b> · Sample section · matched: Python, Next.js &amp; &lt;PostgreSQL&gt;", text)
+        self.assertTrue(balanced(text))
+
+
 class SendTest(unittest.TestCase):
     def test_few_jobs_one_brief_each_with_pause(self) -> None:
         post = FakePost([])
         n, sleeps = notifier(post)
-        n.notify_jobs([job("~1"), job("~2")])
+        n.notify_jobs([alert("~1"), alert("~2")])
         self.assertEqual(len(post.calls), 2)
         self.assertEqual(sleeps, [SEND_PAUSE_S])
         url, form = post.calls[0]
@@ -104,10 +150,10 @@ class SendTest(unittest.TestCase):
 
     def test_threshold_switches_to_digest(self) -> None:
         post = FakePost([])
-        notifier(post)[0].notify_jobs([job(f"~{i}") for i in range(DIGEST_THRESHOLD)])
+        notifier(post)[0].notify_jobs([alert(f"~{i}") for i in range(DIGEST_THRESHOLD)])
         self.assertEqual(len(post.calls), DIGEST_THRESHOLD)
         post = FakePost([])
-        notifier(post)[0].notify_jobs([job(f"~{i}") for i in range(DIGEST_THRESHOLD + 1)])
+        notifier(post)[0].notify_jobs([alert(f"~{i}") for i in range(DIGEST_THRESHOLD + 1)])
         self.assertEqual(len(post.calls), 1)
         self.assertIn(f"gigradar: {DIGEST_THRESHOLD + 1} new jobs", post.calls[0][1]["text"])
 
@@ -121,7 +167,7 @@ class SendTest(unittest.TestCase):
     def test_api_error_raises_without_token(self) -> None:
         reply = (401, json.dumps({"ok": False, "description": "Unauthorized"}).encode())
         with self.assertRaises(TelegramError) as ctx:
-            notifier(FakePost([reply]))[0].notify_jobs([job("~1")])
+            notifier(FakePost([reply]))[0].notify_jobs([alert("~1")])
         self.assertEqual(str(ctx.exception), "HTTP 401: Unauthorized")
 
     def test_ok_false_and_non_json_raise(self) -> None:
@@ -140,7 +186,7 @@ class SendTest(unittest.TestCase):
     def test_failure_mid_batch_stops_and_raises(self) -> None:
         post = FakePost([(200, b'{"ok": true}'), (429, b'{"ok": false, "description": "Too Many Requests"}')])
         with self.assertRaises(TelegramError):
-            notifier(post)[0].notify_jobs([job("~1"), job("~2"), job("~3")])
+            notifier(post)[0].notify_jobs([alert("~1"), alert("~2"), alert("~3")])
         self.assertEqual(len(post.calls), 2)  # no retry, nothing after the failure
 
 

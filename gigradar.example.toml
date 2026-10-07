@@ -46,7 +46,19 @@ use_proxy = false
 # min_hourly = 50         # USD; hourly jobs whose max rate is below this
 # min_fixed = 1000        # USD; fixed jobs whose budget is below this
 # tiers = ["intermediate", "expert"]   # allowed tiers; omit or [] = any
-# exclude_keywords = ["WordPress", "unpaid test"]   # in title or description
+# exclude_keywords = ["WordPress", "unpaid test"]   # in title or skills (not the description)
+
+# Scoring settings (all optional; shown with their defaults). Needs: pip install -r requirements-scoring.txt
+# and the model downloaded once: python -m gigradar.embed --download
+# [scoring]
+# model = "BAAI/bge-small-en-v1.5"   # fastembed model, ~67 MB
+# # model_dir = "D:/somewhere"       # default: %LOCALAPPDATA%\gigradar\models
+# weights = { semantic = 0.7, skills = 0.3 }
+# # Best-section cosine at/below cos_low = semantic 0, at/above cos_high = semantic 100.
+# # Calibrate with: python -m gigradar.score --dry-run
+# cos_low = 0.45
+# cos_high = 0.80
+# skill_saturation = 3               # this many matched skills = full skill score
 
 # One [[searches]] block per saved search. Only `name` is required.
 # Allowed values (same as the upwork_search.py CLI):

@@ -18,11 +18,14 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import sys
+from array import array
 from collections.abc import Sequence
 from dataclasses import asdict
 from datetime import datetime
 from pathlib import Path
 
+from gigradar.score import Score
 from upwork_search import Job
 
 SCHEMA_VERSION = 2
@@ -198,6 +201,61 @@ def record_searches(conn: sqlite3.Connection, results: Sequence[tuple[str, list[
             "INSERT OR IGNORE INTO job_search VALUES (?, ?, ?)",
             [(jid, name, stamp) for name, jobs in results for job in jobs
              if (jid := job_id(job)) is not None])
+
+
+def save_scores(conn: sqlite3.Connection, jobs: Sequence[Job], scores: Sequence[Score], now: datetime) -> int:
+    """Store one score per job (same order); the newest per (job, scorer, version) wins.
+    Jobs without an id are skipped. Returns rows written."""
+    if len(jobs) != len(scores):
+        raise ValueError(f"{len(jobs)} jobs but {len(scores)} scores")
+    rows = [(jid, s.scorer, s.version, s.value, s.reason, now.isoformat())
+            for job, s in zip(jobs, scores) if (jid := job_id(job)) is not None]
+    with conn:
+        conn.executemany("INSERT OR REPLACE INTO scores VALUES (?, ?, ?, ?, ?, ?)", rows)
+    return len(rows)
+
+
+class SqliteEmbeddingCache:
+    """Embeddings in the `embeddings` table, keyed by (key, model): a job (key = its ~cipher) is
+    embedded once per model, never again on re-runs or re-scoring. Profile sections are cached
+    too, under score.section_key() ("profile:<hash of the text>"), so an edited section is
+    re-embedded and an unchanged one is not; the job_id column holds that key."""
+
+    def __init__(self, conn: sqlite3.Connection, now: datetime) -> None:
+        self.conn = conn
+        self.now = now
+
+    def get(self, job_ids: Sequence[str], model: str) -> dict[str, list[float]]:
+        found: dict[str, list[float]] = {}
+        for jid in dict.fromkeys(job_ids):
+            row = self.conn.execute("SELECT dim, vector FROM embeddings WHERE job_id = ? AND model = ?",
+                                    (jid, model)).fetchone()
+            if row is not None:
+                found[jid] = decode_vector(row[1], row[0])
+        return found
+
+    def put(self, vectors: dict[str, list[float]], model: str) -> None:
+        rows = [(jid, model, len(vec), encode_vector(vec), self.now.isoformat()) for jid, vec in vectors.items()]
+        with self.conn:
+            self.conn.executemany("INSERT OR REPLACE INTO embeddings VALUES (?, ?, ?, ?, ?)", rows)
+
+
+def encode_vector(vector: Sequence[float]) -> bytes:
+    """float32 little-endian, independent of the machine's byte order."""
+    values = array("f", vector)
+    if sys.byteorder == "big":
+        values.byteswap()
+    return values.tobytes()
+
+
+def decode_vector(blob: bytes, dim: int) -> list[float]:
+    values = array("f")
+    values.frombytes(blob)
+    if sys.byteorder == "big":
+        values.byteswap()
+    if len(values) != dim:
+        raise StoreError(f"embedding has {len(values)} values, expected {dim}")
+    return values.tolist()
 
 
 def _insert_seen(conn: sqlite3.Connection, jobs: list[Job], now: datetime) -> int:
