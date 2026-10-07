@@ -217,6 +217,13 @@ SQLite** with a scorer name, so an MCP-written score is just another scorer.
    `query_only`), cosine distribution, top/bottom/rejected lists.
    Dev venv: the worktree has its own `.venv` (same Python 3.12.0 as live) = live packages +
    fastembed; installing fastembed only ADDS 28 packages, no live package changes version.
+   First live dry run (68 stored jobs): best-section cosine 0.647–0.845 (median 0.722) ->
+   calibrated `cos_low = 0.65`, `cos_high = 0.82`. Speed ~520 ms per 512-token text on the
+   4-core CPU (batch size irrelevant); fine because each job is embedded once (cache) and only
+   new jobs are scored per run. Profile section vectors are cached too (key = "profile:" +
+   hash of the section text, per model). 2 of 3 rejects were incidental "WordPress" mentions in
+   descriptions -> RuleScorer v2 (EmbeddingScorer v2): exclude_keywords match title + skills
+   only. Deferred to step 6: embed only the first ~200 words (~3-4x faster), judged on labels.
 5. Wire scoring into `watch.py` + notifier output (score line, sorted digest), shadow mode.
 6. Labeling CLI + `--eval`; tune weights/threshold on ~50 labels.
 7. Optional `LLMScorer` (own branch; provider decided then).
