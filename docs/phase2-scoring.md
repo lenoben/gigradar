@@ -1,6 +1,6 @@
 # Phase 2: job scoring against my profile
 
-Status: **plan approved (2026-10-07), not started.** Branch: `feat/scoring`.
+Status: **plan approved (2026-10-07); step 1 built.** Branch: `feat/scoring`.
 Start here in a new session, together with `CLAUDE.local.md` (Phase 1 architecture + repo rules).
 
 ## Goal
@@ -14,6 +14,7 @@ Local by default (no API key); LLM scoring optional; Claude via MCP later (Phase
 | Topic | Decision |
 |---|---|
 | Profile | `profile.md` (free text, **gitignored**; committed template `profile.example.md`) for the semantic match, plus a `[profile]` table in `gigradar.toml` for rates, tiers, skills, keywords |
+| Profile import | One-time `python -m gigradar.profile_import` turns my documents into `profile_sources/*.md` (**gitignored**) as raw material for writing `profile.md` by hand. Converter: **anydoc** (`firecrawl-anydoc`, MIT, local Rust, optional `requirements-profile.txt`). markitdown is **not** used |
 | Default scorer | Local embeddings: **fastembed** (ONNX, no PyTorch) with a small English model |
 | Alert policy | **Shadow mode first**: scores shown in alerts, digests sorted by score, nothing filtered. `min_score` filtering only after calibration |
 | Calibration | Label ~50 stored jobs 👍/👎 with a CLI, then tune weights/threshold on that data |
@@ -55,8 +56,42 @@ Practicalities:
   `%LOCALAPPDATA%\gigradar\models` (pathlib; `~/.local/share/gigradar/models` elsewhere),
   never into the repo. Scheduled runs then work offline.
 - ~60 jobs/run embeds in well under a second on CPU; runs stay ~5 s.
-- **Verify before building** (don't trust memory): fastembed's current version, Windows
-  wheels for Python 3.12, model names and download sizes.
+- **Verified 2026-10-07 (PyPI + fastembed source)**: fastembed **0.8.1** (2026-09-22),
+  pure-Python wheel, Python >=3.10. Its compiled deps all have `cp312-win_amd64` (or abi3)
+  wheels: onnxruntime 1.30.0, tokenizers 0.23.2, numpy, pillow, mmh3, py-rust-stemmers.
+  huggingface-hub is pinned `<2.0` by fastembed (latest is 2.1.1; pip picks 1.x).
+  `TextEmbedding(model_name, cache_dir=...)`; `local_files_only=True` kwarg for offline runs.
+  Candidate models (fastembed's own `size_in_GB`):
+
+  | Model | Dim | Download | License |
+  |---|---|---|---|
+  | `BAAI/bge-small-en-v1.5` (fastembed default) | 384 | 0.067 GB | MIT |
+  | `snowflake/snowflake-arctic-embed-xs` | 384 | 0.09 GB | Apache-2.0 |
+  | `BAAI/bge-base-en-v1.5` | 768 | 0.21 GB | MIT |
+  | `nomic-ai/nomic-embed-text-v1.5-Q` | 768 | 0.13 GB | Apache-2.0 |
+
+  Start with bge-small; compare bge-base at step 6 on the labeled set. Re-check the
+  version right before step 4 in case it moved.
+
+## Profile import (step 1, one-time, optional)
+
+`python -m gigradar.profile_import CV.pdf portfolio/ [--out profile_sources] [--force]`
+converts my documents into `profile_sources/<file name>.md` (gitignored) to copy from when
+writing `profile.md`. **Scheduled runs never convert; scoring only reads `profile.md`.**
+
+- `.pdf/.docx/.pptx/.xlsx/.odt/.rtf` → anydoc; `.txt/.md` → copied as-is (byte copy).
+  Other types are listed as ignored. Folders: top level only.
+- anydoc verified 2026-10-07: `firecrawl-anydoc` **0.2.4** (2026-08-27), MIT, Python >=3.10,
+  no Python deps, `cp310-abi3-win_amd64` wheel. Imported lazily, only when a document
+  needs converting.
+- Image-only/scanned PDFs: anydoc raises **`NeedsOcrError`** (with `.pages`/`.page_count`;
+  not `UnsupportedError`, which is for unknown formats). The file is reported as SKIPPED
+  with the page count and the run continues; no OCR. Encrypted and other `ConvertError`s
+  are reported and skipped the same way. Any skip → exit 1.
+- **Privacy:** anydoc's `to_markdown(..., ocr="hosted")` would upload the whole document
+  to Firecrawl's API (keyless). We pass `ocr="reject"` explicitly; nothing leaves the PC.
+- Outputs are `cv.pdf.md` (so `cv.pdf` and `cv.docx` don't collide); existing outputs are
+  kept unless `--force`, so hand edits in `profile_sources/` survive a re-run.
 
 ## LLM scorer (optional, step 7)
 
@@ -67,6 +102,38 @@ Practicalities:
 - Key in `.env`, never in the TOML. Provider decided at step 7.
 - Run it **only on jobs that pass the local score** (a handful per day, not all 60).
 - Same no-retry policy as everything else: a failure leaves the job unscored-by-LLM, not lost.
+
+## Phase 2.5: shareable setup (after Phase 2, not now; no code yet)
+
+Goal: someone else can install gigradar and get their own alerts without editing files by hand.
+
+- **One instance per user.** Own profile, searches, scoring, store, and their **own Telegram
+  bot** sending to their **own private chat**. No shared group, no shared or bundled token.
+- **Setup wizard** `python -m gigradar.setup` (first run): notification channels (telegram,
+  toast, or both) → searches → profile documents import (`gigradar.profile_import`) →
+  writes `gigradar.toml` and `.env`. The written TOML must pass `load_config` (tested), so
+  the wizard can never produce a config the runs reject.
+- **Telegram step:** the user creates a bot with @BotFather and pastes the token; then sends
+  the bot any message; the wizard calls `getUpdates` and reads the chat ID automatically
+  (private chat only; ask if several). Validate with one test message (as
+  `python -m gigradar.telegram --test` does). The token goes only into `.env`, never echoed or logged.
+- **install.ps1:** creates the venv, installs the deps for the chosen channels/backends, runs
+  the wizard, registers the scheduled task (`scripts/windows/gigradar-task.ps1 -Register`).
+- **Later:** a packaged .exe (PyInstaller); Phase 4's Tauri installer replaces it.
+
+What this means for Phase 2 now:
+- **No hardcoded paths.** Every path (profile, `profile_sources`, model cache, store, logs)
+  comes from config, relative to `gigradar.toml`, or from a platform default via pathlib
+  (`%LOCALAPPDATA%\gigradar\...` / `~/.local/share/gigradar/...`). Nothing assumes my
+  machine or my repo checkout.
+- **Every setting via config:** model name, weights and `min_score` live in `[scoring]` with
+  defaults, so the wizard only writes what the user chose. Personal data stays in
+  gitignored files (`gigradar.toml`, `.env`, `profile.md`, `profile_sources/`, `data/`).
+- Known gap for the .exe only: `config.default_paths()` and `profile_import.DEFAULT_OUT`
+  default to the repo root via `__file__`, which won't exist in a PyInstaller bundle.
+  Fine for venv installs; the .exe step adds a data-dir default (e.g. `%APPDATA%\gigradar`).
+- The import command and the config loader stay usable as library functions (the wizard
+  calls them; no logic only reachable via `argparse`).
 
 ## Claude via MCP (Phase 3, not now)
 
@@ -111,7 +178,11 @@ SQLite** with a scorer name, so an MCP-written score is just another scorer.
 
 ## Build order (branch `feat/scoring`, small Conventional Commits, offline tests each step)
 
-1. Profile: `profile.example.md`, `[profile]` table in `gigradar.example.toml`, loader + validation.
+1. Profile: `profile.example.md`, `[profile]` table in `gigradar.example.toml`, loader + validation;
+   `gigradar.profile_import` (anydoc) for the one-time document import. **Built.**
+   Format: each `## Heading` in `profile.md` = one skill-area section; text above the first
+   `##` and `<!-- comments -->` are ignored; empty/duplicate sections are errors.
+   `[profile]` present = scoring enabled (`Config.profile`), absent = `None`.
 2. Store schema v2 migration (job_search, scores, embeddings, labels) + per-search seeding.
 3. `RuleScorer`: hard rules (missing fields pass) + skill overlap, with reasons.
 4. `EmbeddingScorer` with fastembed (verify versions first) + `--download` setup command.
@@ -125,4 +196,4 @@ step 5 one scheduled run with scores in Telegram; step 6 labeling session.
 ## Constraints (unchanged)
 
 No auto-submitting proposals, no per-minute polling, personal volume only. No secrets in the
-TOML. Never commit `profile.md`, `gigradar.toml`, `.env`, `data/`, models or logs.
+TOML. Never commit `profile.md`, `profile_sources/`, `gigradar.toml`, `.env`, `data/`, models or logs.
