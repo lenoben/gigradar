@@ -18,6 +18,7 @@ import os
 import sys
 from collections.abc import Sequence
 from datetime import datetime, timezone
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from gigradar.config import Config, ConfigError, SearchSpec, default_paths, load_config, load_dotenv
@@ -86,12 +87,27 @@ def build_searcher(cfg: Config, notifier: Notifier) -> Searcher:
     return CurlSearcher(build_provider(cfg.token_sources, cfg.proxy), cfg.proxy, UPSTREAM_SEARCH)
 
 
+def setup_logging(log_file: Path | None) -> None:
+    """Log to a rotating file (scheduled runs under pythonw.exe have no stderr) or stderr."""
+    if log_file is None:
+        handler: logging.Handler = logging.StreamHandler(sys.stderr)
+    else:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handler = RotatingFileHandler(log_file, maxBytes=1_000_000, backupCount=3, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    log.handlers[:] = [handler]
+    log.setLevel(logging.INFO)
+    log.propagate = False
+
+
 def main(argv: Sequence[str]) -> int:
     default_toml, env_path = default_paths()
     parser = argparse.ArgumentParser(prog="python -m gigradar.watch", description=__doc__.split("\n")[0])
     parser.add_argument("--config", type=Path, default=default_toml, help="gigradar.toml path")
+    parser.add_argument("--log-file", type=Path, default=None,
+                        help="append logs here (rotating, 1 MB x 3) instead of stderr; needed under pythonw.exe")
     args = parser.parse_args(argv)
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s", stream=sys.stderr)
+    setup_logging(args.log_file)
 
     try:
         load_dotenv(env_path, os.environ)
