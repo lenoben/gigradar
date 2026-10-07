@@ -1,6 +1,6 @@
 # Phase 2: job scoring against my profile
 
-Status: **plan approved (2026-10-07); steps 1–4 built; 1–2 merged to main.** Branch: `feat/scoring`.
+Status: **plan approved (2026-10-07); steps 1–5 (part A) built; 1–2 merged to main.** Branch: `feat/scoring`.
 Start here in a new session, together with `CLAUDE.local.md` (Phase 1 architecture + repo rules).
 
 ## Goal
@@ -225,6 +225,18 @@ SQLite** with a scorer name, so an MCP-written score is just another scorer.
    descriptions -> RuleScorer v2 (EmbeddingScorer v2): exclude_keywords match title + skills
    only. Deferred to step 6: embed only the first ~200 words (~3-4x faster), judged on labels.
 5. Wire scoring into `watch.py` + notifier output (score line, sorted digest), shadow mode.
+   **Built (part A).** `notify_jobs(alerts)` with `Alert(job, score | None)`; `watch.process`
+   scores only the jobs it alerts (not seeded ones), saves the scores, sorts best first,
+   notifies, marks seen. Nothing filtered (`min_score` comes with step 6). The model loads
+   lazily (offline) on the first scoring call, so runs without new jobs never load it.
+   Failure policy: any scoring error -> logged with traceback, the jobs go out unscored
+   ("Score n/a"), no status message. Timing: scoring runs after `searcher.run()` returned, i.e.
+   outside the WebView watchdog; `SCORING_BUDGET_S = 60`, checked between chunks of 10 jobs,
+   the rest goes out unscored. Worst case with 2 searches: 440 s WebView hard limit + ~67 s
+   scoring + ~80 s Telegram (5 briefs at the 15 s timeout) + ~5 s = ~592 s < the task's
+   10 min. Output: Telegram brief line 2 `<b>82</b> · <section> · matched: …` (<= 160 chars),
+   digest lines `• <b>82</b> <title link> — <pay>`, toast `N new jobs (top 82)` with scored
+   titles, log one line per alert.
 6. Labeling CLI + `--eval`; tune weights/threshold on ~50 labels.
 7. Optional `LLMScorer` (own branch; provider decided then).
 
