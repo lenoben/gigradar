@@ -7,6 +7,7 @@ __pycache__/
 # local / personal
 CLAUDE.local.md
 gigradar.toml
+gigradar-*.toml
 profile.md
 profile_sources/
 data/
