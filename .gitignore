@@ -4,6 +4,21 @@ __pycache__/
 *.pyc
 .token_cache.json
 
+# local / personal
+CLAUDE.local.md
+gigradar.toml
+data/
+.claude/settings.local.json
+.env*
+!.env.example
+node_modules/
+.next/
+web/data/*
+!web/data/.gitignore
+*.db
+*.sqlite
+*.sqlite3
+
 # local artifacts
 .DS_Store
 web/preview-mobile.png
