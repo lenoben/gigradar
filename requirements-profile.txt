@@ -1,0 +1,3 @@
+# Optional: one-time document import (python -m gigradar.profile_import), not needed for scoring.
+# anydoc = local Rust converter, MIT, no services (ocr stays "reject": nothing is uploaded).
+firecrawl-anydoc==0.2.4
