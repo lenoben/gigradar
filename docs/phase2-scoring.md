@@ -1,6 +1,6 @@
 # Phase 2: job scoring against my profile
 
-Status: **plan approved (2026-10-07); steps 1–2 built.** Branch: `feat/scoring`.
+Status: **plan approved (2026-10-07); steps 1–3 built; 1–2 merged to main.** Branch: `feat/scoring`.
 Start here in a new session, together with `CLAUDE.local.md` (Phase 1 architecture + repo rules).
 
 ## Goal
@@ -192,7 +192,15 @@ SQLite** with a scorer name, so an MCP-written score is just another scorer.
    adopted as established (v1 didn't record which ran). Seeding rule: a new job alerts if an
    established search found it, else it is seeded silently; seeding + search registration
    commit before notifying. Store open/migration errors are logged and exit 1.
-3. `RuleScorer`: hard rules (missing fields pass) + skill overlap, with reasons.
+3. `RuleScorer`: hard rules (missing fields pass) + skill overlap, with reasons. **Built.**
+   `gigradar/score.py` (`Score`, `Scorer`, `RuleScorer` "rules" v1, `RuleResult` for step 4) and
+   `gigradar/jobfields.py` (`parse_amount`: None/""/non-numeric/<=0 = missing; shared with the
+   Telegram pay line). Rules in order: exclude keyword (whole term, case-insensitive, title +
+   description), tier, hourly (highest rate offered), fixed budget. Overlap = min(matched, 3)/3;
+   no skills listed = `None` (standalone 50). `store.save_scores` (INSERT OR REPLACE).
+   Field formats verified on the live store (64 jobs): job_type HOURLY/FIXED only, hourly jobs
+   always have min+max, fixed always a budget, 2 jobs without skills, no commas in skill labels.
+   Follow-up: keywords also match negations ("no WordPress"); revisit only if labels show false rejects.
 4. `EmbeddingScorer` with fastembed (verify versions first) + `--download` setup command.
 5. Wire scoring into `watch.py` + notifier output (score line, sorted digest), shadow mode.
 6. Labeling CLI + `--eval`; tune weights/threshold on ~50 labels.
