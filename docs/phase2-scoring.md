@@ -233,8 +233,8 @@ SQLite** with a scorer name, so an MCP-written score is just another scorer.
    ("Score n/a"), no status message. Timing: scoring runs after `searcher.run()` returned, i.e.
    outside the WebView watchdog; `SCORING_BUDGET_S = 60`, checked between chunks of 10 jobs,
    the rest goes out unscored. Worst case with 2 searches: 440 s WebView hard limit + ~67 s
-   scoring + ~80 s Telegram (5 briefs at the 15 s timeout) + ~5 s = ~592 s < the task's
-   10 min. Output: Telegram brief line 2 `<b>82</b> · <section> · matched: …` (<= 160 chars),
+   scoring + ~80 s Telegram (5 briefs at the 15 s timeout) + ~5 s = ~592 s, under 10 min; the
+   task's time limit is raised from 10 to 15 min for margin (re-register after the merge). Output: Telegram brief line 2 `<b>82</b> · <section> · matched: …` (<= 160 chars),
    digest lines `• <b>82</b> <title link> — <pay>`, toast `N new jobs (top 82)` with scored
    titles, log one line per alert.
 6. Labeling CLI + `--eval`; tune weights/threshold on ~50 labels.

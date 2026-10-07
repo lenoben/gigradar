@@ -39,7 +39,8 @@ log = logging.getLogger("gigradar")
 EXIT_OK, EXIT_ERROR, EXIT_CONFIG, EXIT_STOPPED = 0, 1, 2, 75
 # Scoring runs after the search, outside the WebView watchdog. Worst case per run (2 searches):
 # WebView hard limit 440 s + scoring 60 s + one chunk overrun ~7 s + Telegram 5 briefs at the
-# 15 s timeout ~80 s + startup ~5 s = ~592 s < the task's 10 min limit. 60 s still scores ~60 new
+# 15 s timeout ~80 s + startup ~5 s = ~592 s, under 10 min (task limit: 15 min, gigradar-task.ps1,
+# so a run is never killed mid-notification). 60 s still scores ~60 new
 # jobs (2 searches x 30) at ~0.6 s each plus the ~4 s model load; any rest goes out unscored.
 SCORING_BUDGET_S = 60
 SCORING_CHUNK = 10  # jobs per scoring call; the budget is checked between chunks
