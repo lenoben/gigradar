@@ -270,8 +270,9 @@ def _search_with_token(filters: SearchFilters, limit: int, offset: int, token: s
 def run_search(filters: SearchFilters, limit: int, offset: int, proxy: str | None) -> tuple[list[Job], int]:
     """Search from `offset` using a cached token; on a 401 (rotated token) refresh once and retry.
     Returns (jobs, total) where total is the full result count Upwork reports for the query."""
+    token = get_cached_token(proxy)  # a failed fetch propagates: re-fetching would just repeat it
     try:
-        return _search_with_token(filters, limit, offset, get_cached_token(proxy), proxy)
+        return _search_with_token(filters, limit, offset, token, proxy)
     except TokenError:
         _invalidate_token_cache()
         return _search_with_token(filters, limit, offset, get_cached_token(proxy), proxy)
