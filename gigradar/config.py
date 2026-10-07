@@ -30,6 +30,8 @@ _CHOICES = {
     "duration": DURATIONS, "client_hires": CLIENT_HIRES,
 }
 _PROFILE_KEYS = {"path", "skills", "min_hourly", "min_fixed", "tiers", "exclude_keywords"}
+_SCORING_KEYS = {"model", "model_dir", "weights", "cos_low", "cos_high", "skill_saturation"}
+DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 
 
 class ConfigError(Exception):
@@ -41,6 +43,17 @@ class SearchSpec:
     name: str
     filters: SearchFilters
     limit: int
+
+
+@dataclass(frozen=True)
+class ScoringConfig:
+    model: str                      # fastembed model name
+    model_dir: Path                 # where --download puts it; scheduled runs load it offline
+    weight_semantic: float          # combined score = weighted mean of semantic and skill overlap
+    weight_skills: float
+    cos_low: float                  # best-section cosine at/below this -> semantic 0
+    cos_high: float                 # at/above this -> semantic 1 (placeholders until calibrated)
+    skill_saturation: int           # this many matched skills = full skill overlap
 
 
 @dataclass(frozen=True)
@@ -56,6 +69,7 @@ class Config:
     telegram_bot_token: str | None  # env TELEGRAM_BOT_TOKEN
     telegram_chat_id: str | None    # env TELEGRAM_CHAT_ID
     profile: Profile | None         # [profile] present = scoring enabled
+    scoring: ScoringConfig          # [scoring], all keys optional; only used with a profile
 
 
 def load_dotenv(path: Path, environ: MutableMapping[str, str]) -> None:
@@ -128,6 +142,7 @@ def load_config(toml_path: Path, environ: Mapping[str, str]) -> Config:
         raise ConfigError("token.use_proxy = true but UPWORK_PROXY is not set (put it in .env)")
 
     profile = _profile(data["profile"], toml_path.parent) if "profile" in data else None
+    scoring = _scoring(_table(data, "scoring"), toml_path.parent, environ)
 
     return Config(
         db_path=db_path,
@@ -141,14 +156,24 @@ def load_config(toml_path: Path, environ: Mapping[str, str]) -> Config:
         telegram_bot_token=environ.get("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=environ.get("TELEGRAM_CHAT_ID") or None,
         profile=profile,
+        scoring=scoring,
     )
 
 
 def default_webview_profile(environ: Mapping[str, str]) -> Path:
     """%LOCALAPPDATA%\\gigradar\\webview2 on Windows, else ~/.local/share/gigradar/webview2."""
+    return _data_root(environ) / "webview2"
+
+
+def default_model_dir(environ: Mapping[str, str]) -> Path:
+    """%LOCALAPPDATA%\\gigradar\\models on Windows, else ~/.local/share/gigradar/models."""
+    return _data_root(environ) / "models"
+
+
+def _data_root(environ: Mapping[str, str]) -> Path:
     base = environ.get("LOCALAPPDATA")
     root = Path(base) if base else Path.home() / ".local" / "share"
-    return root / "gigradar" / "webview2"
+    return root / "gigradar"
 
 
 def default_paths() -> tuple[Path, Path]:
@@ -228,6 +253,42 @@ def _profile(table: object, base: Path) -> Profile:
         tiers=tiers,
         exclude_keywords=_str_list(table, "exclude_keywords"),
     )
+
+
+def _scoring(table: dict, base: Path, environ: Mapping[str, str]) -> ScoringConfig:
+    unknown = set(table) - _SCORING_KEYS
+    if unknown:
+        raise ConfigError(f"scoring: unknown keys {sorted(unknown)}")
+    model = _get(table, "model", str, DEFAULT_MODEL, "scoring")
+    raw_dir = _get(table, "model_dir", str, None, "scoring")
+    model_dir = Path(raw_dir) if raw_dir else default_model_dir(environ)
+    if not model_dir.is_absolute():
+        model_dir = base / model_dir
+
+    weights = _get(table, "weights", dict, {}, "scoring")
+    if set(weights) - {"semantic", "skills"}:
+        raise ConfigError(f"scoring.weights: unknown keys {sorted(set(weights) - {'semantic', 'skills'})}")
+    semantic = _number(weights, "semantic", 0.7, "scoring.weights")
+    skills = _number(weights, "skills", 0.3, "scoring.weights")
+    if semantic + skills <= 0:
+        raise ConfigError("scoring.weights: semantic + skills must be > 0")
+
+    cos_low = _number(table, "cos_low", 0.45, "scoring")
+    cos_high = _number(table, "cos_high", 0.80, "scoring")
+    if not 0 <= cos_low < cos_high <= 1:
+        raise ConfigError(f"scoring: need 0 <= cos_low < cos_high <= 1, got {cos_low}, {cos_high}")
+    saturation = _get(table, "skill_saturation", int, 3, "scoring")
+    if saturation < 1:
+        raise ConfigError(f"scoring.skill_saturation must be >= 1, got {saturation}")
+    return ScoringConfig(model=model, model_dir=model_dir, weight_semantic=semantic, weight_skills=skills,
+                         cos_low=cos_low, cos_high=cos_high, skill_saturation=saturation)
+
+
+def _number(table: dict, key: str, fallback: float, where: str) -> float:
+    value = table.get(key, fallback)
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        raise ConfigError(f"{where}.{key} must be a non-negative number, got {value!r}")
+    return float(value)
 
 
 def _str_list(table: dict, key: str) -> list[str]:
