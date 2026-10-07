@@ -289,11 +289,13 @@ def dry_run(jobs: Sequence[Job], profile: Profile, scorer: EmbeddingScorer, limi
     for title, chunk in (("top", ranked[:limit]), ("bottom", ranked[::-1][:limit])):
         print(f"\n{title} {len(chunk)}:", file=out)
         for job, r in chunk:
-            print(f"  {r.score.value:3d}  cos {r.cosine:.3f}  {r.score.reason[:55]:<55}  {job.title[:55]}", file=out)
+            print(f"  {r.score.value:3d}  cos {r.cosine:.3f}  {job.title[:90]}", file=out)
+            print(f"                  {r.score.reason}", file=out)
     if rejected:
         print(f"\nrejected (first {min(limit, len(rejected))}):", file=out)
         for job, r in rejected[:limit]:
-            print(f"    0  {r.rule.rejected[:55]:<55}  {job.title[:55]}", file=out)
+            print(f"    0  cos {r.cosine:.3f}  {job.title[:90]}", file=out)
+            print(f"                  {r.rule.rejected}", file=out)
 
 
 def main(argv: Sequence[str]) -> int:

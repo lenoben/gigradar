@@ -229,6 +229,7 @@ class DryRunTest(unittest.TestCase):
             self.assertIn("best-section cosine: min", text)
             self.assertIn("rejected by hard rules: 1 of 3", text)
             self.assertIn("✗ tier entry not wanted", text)
+            self.assertIn("· matched: Rust, PostgreSQL\n", text)  # full reason on its own line, not cut
             self.assertEqual(hashlib.sha256(db.read_bytes()).hexdigest(), before)
             self.assertEqual(list(Path(tmp).iterdir()), [db])  # no -journal/-wal files, no backup
 
