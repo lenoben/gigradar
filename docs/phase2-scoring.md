@@ -1,6 +1,6 @@
 # Phase 2: job scoring against my profile
 
-Status: **plan approved (2026-10-07); step 1 built.** Branch: `feat/scoring`.
+Status: **plan approved (2026-10-07); steps 1–2 built.** Branch: `feat/scoring`.
 Start here in a new session, together with `CLAUDE.local.md` (Phase 1 architecture + repo rules).
 
 ## Goal
@@ -183,7 +183,15 @@ SQLite** with a scorer name, so an MCP-written score is just another scorer.
    Format: each `## Heading` in `profile.md` = one skill-area section; text above the first
    `##` and `<!-- comments -->` are ignored; empty/duplicate sections are errors.
    `[profile]` present = scoring enabled (`Config.profile`), absent = `None`.
-2. Store schema v2 migration (job_search, scores, embeddings, labels) + per-search seeding.
+2. Store schema v2 migration (job_search, scores, embeddings, labels) + per-search seeding. **Built.**
+   New tables: `search_runs` (established searches), `job_search`, `scores` (PK job, scorer,
+   version), `embeddings` (float32 BLOB), `labels` (+1/-1); no FKs (jobs are scored before
+   they are marked seen). v1 -> v2: backup `gigradar.db.v1-<UTC>.bak` via SQLite's backup API
+   (never overwritten; no backup = no migration), then one `BEGIN IMMEDIATE` transaction;
+   `seen_jobs` untouched, so nothing re-alerts. Searches configured at migration time are
+   adopted as established (v1 didn't record which ran). Seeding rule: a new job alerts if an
+   established search found it, else it is seeded silently; seeding + search registration
+   commit before notifying. Store open/migration errors are logged and exit 1.
 3. `RuleScorer`: hard rules (missing fields pass) + skill overlap, with reasons.
 4. `EmbeddingScorer` with fastembed (verify versions first) + `--download` setup command.
 5. Wire scoring into `watch.py` + notifier output (score line, sorted digest), shadow mode.
