@@ -16,7 +16,7 @@ from upwork_search import CLIENT_HIRES, DURATIONS, JOB_TYPES, PAGE_MAX, TIERS, W
 
 TOKEN_SOURCES = ("manual", "fetch")
 BACKENDS = ("webview", "curl")
-NOTIFY_CHANNELS = ("toast",)
+NOTIFY_CHANNELS = ("toast", "telegram")
 MAX_LIMIT = PAGE_MAX  # one page = exactly one request per search per run
 SECRET_KEYS = {"bot_token", "telegram_bot_token", "chat_id", "telegram_chat_id", "proxy", "proxy_url", "token"}
 
@@ -111,6 +111,9 @@ def load_config(toml_path: Path, environ: Mapping[str, str]) -> Config:
     channels = _get(notify, "channels", list, [], "notify")
     if any(c not in NOTIFY_CHANNELS for c in channels):
         raise ConfigError(f"notify.channels must be a subset of {NOTIFY_CHANNELS}, got {channels}")
+    if "telegram" in channels and not (environ.get("TELEGRAM_BOT_TOKEN") and environ.get("TELEGRAM_CHAT_ID")):
+        raise ConfigError("notify.channels has 'telegram' but TELEGRAM_BOT_TOKEN / TELEGRAM_CHAT_ID "
+                          "are not set (put them in .env)")
 
     token = _table(data, "token")
     sources = _get(token, "sources", list, ["manual", "fetch"], "token")

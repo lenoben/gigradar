@@ -21,8 +21,10 @@ backend = "webview"
 # webview_profile = "D:/somewhere/else"
 
 [notify]
-# Desktop notifications for new jobs and "click needed". "toast" = Windows toast
-# (needs: pip install -r requirements-toast.txt). Empty = log only.
+# Where new jobs and "click needed" messages go (the log always gets them):
+#   "toast"    = Windows toast with a short summary (needs: pip install -r requirements-toast.txt)
+#   "telegram" = a brief per job, or one digest if a run finds more than 5
+#                (needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env; test: python -m gigradar.telegram --test)
 channels = ["toast"]
 
 [token]

@@ -31,7 +31,6 @@ from upwork_search import Job
 log = logging.getLogger("gigradar")
 
 EXIT_OK, EXIT_ERROR, EXIT_CONFIG, EXIT_STOPPED = 0, 1, 2, 75
-MAX_TITLES = 3
 
 Results = list[tuple[SearchSpec, list[Job]]]
 
@@ -60,9 +59,7 @@ def process(conn, results: Results, notifier: Notifier, now: datetime) -> int:
         log.info("first run: seeded %d jobs silently", len(new))
         return 0
     if new:
-        titles = "\n".join(f"• {job.title}" for job in new[:MAX_TITLES])
-        more = f"\n…and {len(new) - MAX_TITLES} more" if len(new) > MAX_TITLES else ""
-        notifier.notify(f"gigradar: {len(new)} new job{'s' if len(new) != 1 else ''}", titles + more)
+        notifier.notify_jobs(new)  # raises on failure -> not marked seen -> re-sent next run
     mark_seen(conn, new, now)
     log.info("%d new of %d found", len(new), len(jobs))
     return len(new)
@@ -118,7 +115,7 @@ def main(argv: Sequence[str]) -> int:
     try:
         load_dotenv(env_path, os.environ)
         cfg = load_config(args.config, os.environ)
-        notifier = build_notifier(cfg.notify_channels)
+        notifier = build_notifier(cfg)
         searcher = build_searcher(cfg, notifier)
     except ConfigError as exc:
         log.error("config: %s", exc)
