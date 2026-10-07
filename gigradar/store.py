@@ -21,7 +21,7 @@ import sqlite3
 import sys
 from array import array
 from collections.abc import Sequence
-from dataclasses import asdict
+from dataclasses import asdict, fields
 from datetime import datetime
 from pathlib import Path
 
@@ -213,6 +213,30 @@ def save_scores(conn: sqlite3.Connection, jobs: Sequence[Job], scores: Sequence[
     with conn:
         conn.executemany("INSERT OR REPLACE INTO scores VALUES (?, ?, ?, ?, ?, ?)", rows)
     return len(rows)
+
+
+def stored_jobs(conn: sqlite3.Connection) -> list[Job]:
+    """Every job in the store, oldest first, rebuilt from its saved payload."""
+    names = {f.name for f in fields(Job)}
+    return [Job(**{k: v for k, v in json.loads(payload).items() if k in names})
+            for (payload,) in conn.execute("SELECT payload FROM seen_jobs ORDER BY first_seen, job_id")]
+
+
+def save_label(conn: sqlite3.Connection, jid: str, label: int, now: datetime) -> None:
+    """My verdict on a job: +1 (would apply) or -1 (not for me). Replaces an earlier one."""
+    if label not in (1, -1):
+        raise ValueError(f"label must be +1 or -1, got {label}")
+    with conn:
+        conn.execute("INSERT OR REPLACE INTO labels VALUES (?, ?, ?)", (jid, label, now.isoformat()))
+
+
+def delete_label(conn: sqlite3.Connection, jid: str) -> None:
+    with conn:
+        conn.execute("DELETE FROM labels WHERE job_id = ?", (jid,))
+
+
+def load_labels(conn: sqlite3.Connection) -> dict[str, int]:
+    return dict(conn.execute("SELECT job_id, label FROM labels"))
 
 
 class SqliteEmbeddingCache:

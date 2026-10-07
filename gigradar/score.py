@@ -28,10 +28,11 @@ import statistics
 import sys
 import time
 from collections.abc import Sequence
-from dataclasses import dataclass, fields
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
+from gigradar.config import ScoringConfig
 from gigradar.embed import Embedder, Vector, cosine
 from gigradar.jobfields import format_money, parse_amount
 from gigradar.profile import Profile
@@ -192,12 +193,23 @@ def scale(value: float, low: float, high: float) -> float:
     return min(1.0, max(0.0, (value - low) / (high - low)))
 
 
+def truncate_words(text: str, max_words: int | None) -> str:
+    if max_words is None:
+        return text
+    words = text.split()
+    return text if len(words) <= max_words else " ".join(words[:max_words])
+
+
 class EmbeddingScorer:
     name = "embed"
-    version = "2"  # 2: uses RuleScorer v2 (keyword rule changed)
+    base_version = "2"  # 2: uses RuleScorer v2 (keyword rule changed)
 
     def __init__(self, embedder: Embedder, rules: RuleScorer, cache: EmbeddingCache,
-                 weight_semantic: float, weight_skills: float, cos_low: float, cos_high: float) -> None:
+                 weight_semantic: float, weight_skills: float, cos_low: float, cos_high: float,
+                 zero_match_unknown: bool, max_words: int | None) -> None:
+        """zero_match_unknown: a job listing skills of which none match is scored like a job
+        listing no skills (semantic part only) instead of getting skill overlap 0.
+        max_words: embed only the first N words of a job (faster; cached separately)."""
         self.embedder = embedder
         self.rules = rules
         self.cache = cache
@@ -205,6 +217,12 @@ class EmbeddingScorer:
         self.weight_skills = weight_skills
         self.cos_low = cos_low
         self.cos_high = cos_high
+        self.zero_match_unknown = zero_match_unknown
+        self.max_words = max_words
+        # Variants are told apart in stored scores and in the embedding cache.
+        self.version = (self.base_version + ("-zu" if zero_match_unknown else "")
+                        + (f"-w{max_words}" if max_words else ""))
+        self.cache_model = embedder.model_id + (f"#w{max_words}" if max_words else "")
 
     def score(self, jobs: Sequence[Job], profile: Profile) -> list[Score]:
         return [r.score for r in self.evaluate(jobs, profile)]
@@ -215,7 +233,8 @@ class EmbeddingScorer:
         sections = profile.sections
         section_texts = [f"{s.heading}\n{s.text}" for s in sections]
         section_vecs = self._vectors(section_texts, [section_key(t) for t in section_texts])
-        job_vecs = self._vectors([job_text(job) for job in jobs], [job_id(job) for job in jobs])
+        job_vecs = self._vectors([truncate_words(job_text(job), self.max_words) for job in jobs],
+                                 [job_id(job) for job in jobs])
         results = []
         for job, vec, rule in zip(jobs, job_vecs, self.rules.evaluate(jobs, profile), strict=True):
             sims = [cosine(vec, s) for s in section_vecs]
@@ -228,7 +247,7 @@ class EmbeddingScorer:
     def _vectors(self, texts: list[str], keys: list[str | None]) -> list[Vector]:
         """Cached vectors where possible; embed the rest in one batch and cache those with a key.
         Keys: a job's ~cipher, or section_key() for profile sections."""
-        model = self.embedder.model_id
+        model = self.cache_model
         cached = self.cache.get([key for key in keys if key is not None], model)
         missing = [k for k, key in enumerate(keys) if key is None or key not in cached]
         fresh = dict(zip(missing, self.embedder.embed([texts[k] for k in missing]), strict=True))
@@ -241,25 +260,31 @@ class EmbeddingScorer:
         if rule.rejected:
             return Score(0, rule.rejected, self.name, self.version)
         total, weights = self.weight_semantic * semantic, self.weight_semantic
-        if rule.overlap is not None:  # no skills listed: semantic alone
-            total += self.weight_skills * rule.overlap
+        overlap = None if (self.zero_match_unknown and rule.overlap == 0) else rule.overlap
+        if overlap is not None:  # no skills listed (or none matched, if unknown): semantic alone
+            total += self.weight_skills * overlap
             weights += self.weight_skills
         value = round(100 * total / weights) if weights > 0 else NEUTRAL
         reason = heading + (f" · matched: {', '.join(rule.matched)}" if rule.matched else "")
         return Score(value, reason, self.name, self.version)
 
 
+def scorer_from_config(embedder: Embedder, s: ScoringConfig, cache: EmbeddingCache) -> EmbeddingScorer:
+    """The EmbeddingScorer a [scoring] table describes (watch, dry run and eval all build it here)."""
+    return EmbeddingScorer(embedder, RuleScorer(s.skill_saturation), cache, s.weight_semantic, s.weight_skills,
+                           s.cos_low, s.cos_high, s.zero_skill_match == "unknown", s.max_words)
+
+
 def load_stored_jobs(db_path: Path) -> list[Job]:
     """All stored jobs, oldest first, via a read-only connection (SQLite refuses writes)."""
-    import json
     import sqlite3
+
+    from gigradar.store import stored_jobs  # store imports this module
 
     conn = sqlite3.connect(f"file:{db_path.as_posix()}?mode=ro", uri=True)
     try:
         conn.execute("PRAGMA query_only = ON")
-        names = {f.name for f in fields(Job)}
-        return [Job(**{k: v for k, v in json.loads(payload).items() if k in names})
-                for (payload,) in conn.execute("SELECT payload FROM seen_jobs ORDER BY first_seen, job_id")]
+        return stored_jobs(conn)
     finally:
         conn.close()
 
@@ -326,8 +351,7 @@ def main(argv: Sequence[str]) -> int:
         print(f"error: {exc}", file=sys.stderr)
         return 1
     print(f"model loaded offline in {time.perf_counter() - started:.2f} s")
-    scorer = EmbeddingScorer(embedder, RuleScorer(s.skill_saturation), MemoryEmbeddingCache(),
-                             s.weight_semantic, s.weight_skills, s.cos_low, s.cos_high)
+    scorer = scorer_from_config(embedder, s, MemoryEmbeddingCache())
     dry_run(load_stored_jobs(cfg.db_path), cfg.profile, scorer, args.limit, sys.stdout)
     return 0
 

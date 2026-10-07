@@ -53,8 +53,10 @@ PROFILE2 = replace(PROFILE, sections=[
 ])
 
 
-def scorer(embedder, cache=None, semantic=0.7, skills=0.3, low=0.0, high=1.0) -> EmbeddingScorer:
-    return EmbeddingScorer(embedder, RuleScorer(3), cache or MemoryEmbeddingCache(), semantic, skills, low, high)
+def scorer(embedder, cache=None, semantic=0.7, skills=0.3, low=0.0, high=1.0, zero_unknown=False,
+           max_words=None) -> EmbeddingScorer:
+    return EmbeddingScorer(embedder, RuleScorer(3), cache or MemoryEmbeddingCache(), semantic, skills, low, high,
+                           zero_unknown, max_words)
 
 
 class MathTest(unittest.TestCase):
