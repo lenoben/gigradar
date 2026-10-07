@@ -1,6 +1,6 @@
 # Phase 2: job scoring against my profile
 
-Status: **plan approved (2026-10-07); steps 1–3 built; 1–2 merged to main.** Branch: `feat/scoring`.
+Status: **plan approved (2026-10-07); steps 1–4 built; 1–2 merged to main.** Branch: `feat/scoring`.
 Start here in a new session, together with `CLAUDE.local.md` (Phase 1 architecture + repo rules).
 
 ## Goal
@@ -201,7 +201,22 @@ SQLite** with a scorer name, so an MCP-written score is just another scorer.
    Field formats verified on the live store (64 jobs): job_type HOURLY/FIXED only, hourly jobs
    always have min+max, fixed always a budget, 2 jobs without skills, no commas in skill labels.
    Follow-up: keywords also match negations ("no WordPress"); revisit only if labels show false rejects.
-4. `EmbeddingScorer` with fastembed (verify versions first) + `--download` setup command.
+4. `EmbeddingScorer` with fastembed (verify versions first) + `--download` setup command. **Built.**
+   Re-checked 2026-10-07: fastembed **0.9.0** appeared that day (16:38 UTC, same deps; drops the
+   GCS fallback URLs; bge-small entry and `local_files_only` unchanged). Pinned **0.8.1** in
+   `requirements-scoring.txt` (2 weeks without a fix release); re-check at the step 5 merge.
+   `gigradar/embed.py`: `Embedder` protocol, `FastEmbedder` (lazy import; offline = `local_files_only`
+   + `HF_HUB_OFFLINE=1`; `ValueError` -> `EmbedderError` with a "--download" hint),
+   `python -m gigradar.embed --download` (download, then verify an offline load).
+   `EmbeddingScorer` ("embed" v1) in `score.py`: best section by cosine (stdlib math on normalized
+   vectors), `scale(cos, cos_low, cos_high)`, weighted mean with skill overlap (semantic only if
+   the job lists no skills), 0 + rule reason if rejected; reason = `<section> · matched: ...`.
+   Job vectors cached per (job_id, model) via `store.SqliteEmbeddingCache` (float32 LE BLOB).
+   `[scoring]` table: model, model_dir, weights, cos_low/cos_high (placeholders 0.45/0.80),
+   skill_saturation. `python -m gigradar.score --dry-run`: stored jobs read-only (`mode=ro` +
+   `query_only`), cosine distribution, top/bottom/rejected lists.
+   Dev venv: the worktree has its own `.venv` (same Python 3.12.0 as live) = live packages +
+   fastembed; installing fastembed only ADDS 28 packages, no live package changes version.
 5. Wire scoring into `watch.py` + notifier output (score line, sorted digest), shadow mode.
 6. Labeling CLI + `--eval`; tune weights/threshold on ~50 labels.
 7. Optional `LLMScorer` (own branch; provider decided then).
