@@ -12,6 +12,7 @@ from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
+from gigradar.profile import Profile, ProfileError, read_sections
 from upwork_search import CLIENT_HIRES, DURATIONS, JOB_TYPES, PAGE_MAX, TIERS, WORKLOADS, SearchFilters
 
 TOKEN_SOURCES = ("manual", "fetch")
@@ -28,6 +29,7 @@ _CHOICES = {
     "job_type": JOB_TYPES, "tier": tuple(TIERS), "workload": WORKLOADS,
     "duration": DURATIONS, "client_hires": CLIENT_HIRES,
 }
+_PROFILE_KEYS = {"path", "skills", "min_hourly", "min_fixed", "tiers", "exclude_keywords"}
 
 
 class ConfigError(Exception):
@@ -53,6 +55,7 @@ class Config:
     proxy: str | None               # env UPWORK_PROXY
     telegram_bot_token: str | None  # env TELEGRAM_BOT_TOKEN
     telegram_chat_id: str | None    # env TELEGRAM_CHAT_ID
+    profile: Profile | None         # [profile] present = scoring enabled
 
 
 def load_dotenv(path: Path, environ: MutableMapping[str, str]) -> None:
@@ -124,6 +127,8 @@ def load_config(toml_path: Path, environ: Mapping[str, str]) -> Config:
     if use_proxy and not proxy:
         raise ConfigError("token.use_proxy = true but UPWORK_PROXY is not set (put it in .env)")
 
+    profile = _profile(data["profile"], toml_path.parent) if "profile" in data else None
+
     return Config(
         db_path=db_path,
         searches=searches,
@@ -135,6 +140,7 @@ def load_config(toml_path: Path, environ: Mapping[str, str]) -> Config:
         proxy=proxy if use_proxy else None,
         telegram_bot_token=environ.get("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=environ.get("TELEGRAM_CHAT_ID") or None,
+        profile=profile,
     )
 
 
@@ -195,6 +201,49 @@ def _search(entry: object, default_limit: int) -> SearchSpec:
         location=values["location"], highlight=False,
     )
     return SearchSpec(name=name, filters=filters, limit=limit)
+
+
+def _profile(table: object, base: Path) -> Profile:
+    if not isinstance(table, dict):
+        raise ConfigError("[profile] must be a table")
+    unknown = set(table) - _PROFILE_KEYS
+    if unknown:
+        raise ConfigError(f"profile: unknown keys {sorted(unknown)}")
+    path = Path(_get(table, "path", str, "profile.md", "profile"))
+    if not path.is_absolute():
+        path = base / path
+    tiers = _str_list(table, "tiers")
+    if any(t not in TIERS for t in tiers):
+        raise ConfigError(f"profile.tiers must be a subset of {tuple(TIERS)}, got {tiers}")
+    try:
+        sections = read_sections(path)
+    except ProfileError as exc:
+        raise ConfigError(f"profile: {exc}") from exc
+    return Profile(
+        path=path,
+        sections=sections,
+        skills=_str_list(table, "skills"),
+        min_hourly=_amount(table, "min_hourly"),
+        min_fixed=_amount(table, "min_fixed"),
+        tiers=tiers,
+        exclude_keywords=_str_list(table, "exclude_keywords"),
+    )
+
+
+def _str_list(table: dict, key: str) -> list[str]:
+    value = _get(table, key, list, [], "profile")
+    if any(not isinstance(v, str) or not v.strip() for v in value):
+        raise ConfigError(f"profile.{key} must be a list of non-empty strings")
+    return [v.strip() for v in value]
+
+
+def _amount(table: dict, key: str) -> float | None:
+    value = table.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int | float) or value < 0:
+        raise ConfigError(f"profile.{key} must be a non-negative number, got {value!r}")
+    return float(value)
 
 
 def _reject_secrets(node: object, where: str) -> None:
