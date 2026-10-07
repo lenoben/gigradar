@@ -1,6 +1,7 @@
 # Phase 2: job scoring against my profile
 
-Status: **plan approved (2026-10-07); steps 1–5 merged to main (2026-10-07); step 6 built on `feat/labeling`.**
+Status: **plan approved (2026-10-07); steps 1–6 merged to main; step 6 evaluated 2026-10-08, live with min_score = 20.**
+Open: step 7 (optional LLM scorer), relabel in ~2 weeks, Phase 2.5.
 Start here in a new session, together with `CLAUDE.local.md` (Phase 1 architecture + repo rules).
 
 ## Goal
@@ -251,6 +252,22 @@ SQLite** with a scorer name, so an MCP-written score is just another scorer.
    the user's note: 3 good jobs scored ~20 with zero matched labels), `max_words`, `min_score`
    (0 = shadow mode; jobs below it are scored + marked seen, logged as filtered, not alerted;
    unscored jobs are never filtered). bge-base only if the eval shows the semantic part is weak.
+   **Evaluated 2026-10-08** on 51 labels (36 👍 / 15 👎, of 70 stored jobs):
+   | variant | AUC (95% CI) | P@5 | P@10 |
+   |---|---|---|---|
+   | current config (0.7/0.3, saturation 5, cos 0.65/0.82) | 0.76 (0.59–0.90) | 5/5 | 9/10 |
+   | zero skill match = unknown | 0.76, diff −0.00 | 5/5 | 9/10 |
+   | semantic only | 0.75 | 5/5 | 9/10 |
+   | first 200 words only | 0.75, diff −0.01 (−0.06..+0.05) | 4/5 | 9/10 |
+   | skills only / rules only | 0.68 | 4/5 | 7/10 |
+   | BM25 keywords | 0.52, diff −0.24 (−0.44..−0.04) | 3/5 | 7/10 |
+
+   Decisions: **keep the current config** (no variant clearly better); **`min_score = 20`**
+   (keeps 97% of 👍, filters 20% of 👎; ~70% of found jobs are 👍, so a higher threshold would
+   mainly lose good jobs). The embeddings clearly beat keywords and carry most of the signal,
+   so bge-base is not needed. `zero_skill_match = "unknown"` made no difference; "first 200
+   words" is equal and 3–4x faster (kept as an option, scheduled runs embed few jobs).
+   Caveat: only 15 👎, wide intervals. Relabel in ~2 weeks and re-run `--eval` / re-check min_score.
 7. Optional `LLMScorer` (own branch; provider decided then).
 
 Live checks (user runs them): step 4 model download + one scoring dry run on stored jobs;
