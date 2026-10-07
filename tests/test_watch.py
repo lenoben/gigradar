@@ -26,6 +26,16 @@ query = "rust"
 """
 
 
+def reset_logging() -> None:
+    """Close and detach file handlers so Windows can delete the temp dir and later tests
+    don't write to a deleted file."""
+    for name in ("gigradar", "pywebview"):
+        logger = logging.getLogger(name)
+        for handler in logger.handlers:
+            handler.close()
+        logger.handlers[:] = []
+
+
 def job(cipher: str) -> Job:
     return Job(f"job {cipher}", f"https://www.upwork.com/jobs/{cipher}", None, None, None, None, None, None, "", "")
 
@@ -137,10 +147,13 @@ class WatchTest(unittest.TestCase):
         try:
             self.assertEqual(main(["--config", str(self.dir / "missing.toml"), "--log-file", str(log_file)]),
                              EXIT_CONFIG)
-            self.assertIn("ERROR config:", log_file.read_text(encoding="utf-8"))
+            text = log_file.read_text(encoding="utf-8")
+            self.assertIn("run start", text)
+            self.assertIn("ERROR [gigradar] config:", text)
+            logging.getLogger("pywebview").error("WebView2 initialization failed")  # captured too
+            self.assertIn("[pywebview] WebView2 initialization failed", log_file.read_text(encoding="utf-8"))
         finally:
-            for handler in logging.getLogger("gigradar").handlers:
-                handler.close()  # release the file so Windows can delete the temp dir
+            reset_logging()
 
 
 if __name__ == "__main__":
