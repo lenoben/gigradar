@@ -16,7 +16,7 @@ from gigradar.config import ConfigError, load_config
 from gigradar.embed import EmbedderError, FastEmbedder, cosine, normalize
 from gigradar.profile import ProfileSection
 from gigradar.score import (EmbeddingScorer, MemoryEmbeddingCache, RuleScorer, dry_run, job_text,
-                            load_stored_jobs, scale)
+                            load_stored_jobs, scale, section_key)
 from gigradar.store import SqliteEmbeddingCache, StoreError, decode_vector, encode_vector, mark_seen, open_store
 from test_score import PROFILE, make_job
 
@@ -114,7 +114,7 @@ class EmbeddingScorerTest(unittest.TestCase):
         first = scorer(fake, cache).score(jobs, PROFILE2)
         self.assertEqual(fake.embedded(), 2 + 3)  # 2 sections + 3 jobs
         second = scorer(fake, cache).score(jobs, PROFILE2)
-        self.assertEqual(fake.embedded(), 5 + 2 + 1)  # sections again + only the id-less job
+        self.assertEqual(fake.embedded(), 5 + 1)  # sections cached too: only the id-less job
         self.assertEqual(first, second)
         other = FakeEmbedder("model-b")
         scorer(other, cache).score(jobs, PROFILE2)
@@ -139,10 +139,12 @@ class StoreCacheTest(unittest.TestCase):
             jobs = [make_job(), make_job(url="https://www.upwork.com/jobs/~02")]
             first = scorer(fake, cache).score(jobs, PROFILE2)
             rows = conn.execute("SELECT job_id, model, dim FROM embeddings ORDER BY 1").fetchall()
-            self.assertEqual(rows, [("~01", "model-a", DIM), ("~02", "model-a", DIM)])
+            keys = [section_key(f"{s.heading}\n{s.text}") for s in PROFILE2.sections]
+            self.assertEqual(rows, sorted([(k, "model-a", DIM) for k in keys]
+                                          + [("~01", "model-a", DIM), ("~02", "model-a", DIM)]))
             again = FakeEmbedder("model-a")
             self.assertEqual(scorer(again, cache).score(jobs, PROFILE2), first)
-            self.assertEqual(again.embedded(), 2)  # sections only
+            self.assertEqual(again.embedded(), 0)  # jobs and sections all cached
         finally:
             conn.close()
 

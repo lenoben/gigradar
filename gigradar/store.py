@@ -216,8 +216,10 @@ def save_scores(conn: sqlite3.Connection, jobs: Sequence[Job], scores: Sequence[
 
 
 class SqliteEmbeddingCache:
-    """Job embeddings in the `embeddings` table, keyed by (job_id, model): a job is embedded
-    once per model, never again on re-runs or re-scoring."""
+    """Embeddings in the `embeddings` table, keyed by (key, model): a job (key = its ~cipher) is
+    embedded once per model, never again on re-runs or re-scoring. Profile sections are cached
+    too, under score.section_key() ("profile:<hash of the text>"), so an edited section is
+    re-embedded and an unchanged one is not; the job_id column holds that key."""
 
     def __init__(self, conn: sqlite3.Connection, now: datetime) -> None:
         self.conn = conn

@@ -20,6 +20,7 @@ plus the best and worst jobs, for calibrating cos_low/cos_high.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import os
 import re
 import statistics
@@ -178,6 +179,12 @@ def job_text(job: Job) -> str:
     return f"{job.title}\nSkills: {job.skills}\n{job.description}"
 
 
+def section_key(text: str) -> str:
+    """Cache key of a profile section's embedding: changes whenever its text does (the model is
+    the cache's second key). Never collides with job ids, which start with "~"."""
+    return "profile:" + hashlib.sha256(text.encode("utf-8")).hexdigest()[:32]
+
+
 def scale(value: float, low: float, high: float) -> float:
     return min(1.0, max(0.0, (value - low) / (high - low)))
 
@@ -203,8 +210,9 @@ class EmbeddingScorer:
         from gigradar.store import job_id  # store imports this module
 
         sections = profile.sections
-        section_vecs = self.embedder.embed([f"{s.heading}\n{s.text}" for s in sections])
-        job_vecs = self._job_vectors(jobs, [job_id(job) for job in jobs])
+        section_texts = [f"{s.heading}\n{s.text}" for s in sections]
+        section_vecs = self._vectors(section_texts, [section_key(t) for t in section_texts])
+        job_vecs = self._vectors([job_text(job) for job in jobs], [job_id(job) for job in jobs])
         results = []
         for job, vec, rule in zip(jobs, job_vecs, self.rules.evaluate(jobs, profile), strict=True):
             sims = [cosine(vec, s) for s in section_vecs]
@@ -214,16 +222,17 @@ class EmbeddingScorer:
             results.append(EmbedResult(self._combine(rule, semantic, heading), sims[best], heading, rule))
         return results
 
-    def _job_vectors(self, jobs: Sequence[Job], ids: list[str | None]) -> list[Vector]:
-        """Cached vectors where possible; embed the rest in one batch and cache those with an id."""
+    def _vectors(self, texts: list[str], keys: list[str | None]) -> list[Vector]:
+        """Cached vectors where possible; embed the rest in one batch and cache those with a key.
+        Keys: a job's ~cipher, or section_key() for profile sections."""
         model = self.embedder.model_id
-        cached = self.cache.get([i for i in ids if i is not None], model)
-        missing = [k for k, jid in enumerate(ids) if jid is None or jid not in cached]
-        fresh = dict(zip(missing, self.embedder.embed([job_text(jobs[k]) for k in missing]), strict=True))
-        new_entries = {ids[k]: vec for k, vec in fresh.items() if ids[k] is not None}
+        cached = self.cache.get([key for key in keys if key is not None], model)
+        missing = [k for k, key in enumerate(keys) if key is None or key not in cached]
+        fresh = dict(zip(missing, self.embedder.embed([texts[k] for k in missing]), strict=True))
+        new_entries = {keys[k]: vec for k, vec in fresh.items() if keys[k] is not None}
         if new_entries:
             self.cache.put(new_entries, model)
-        return [fresh[k] if k in fresh else cached[ids[k]] for k in range(len(jobs))]
+        return [fresh[k] if k in fresh else cached[keys[k]] for k in range(len(texts))]
 
     def _combine(self, rule: RuleResult, semantic: float, heading: str) -> Score:
         if rule.rejected:
