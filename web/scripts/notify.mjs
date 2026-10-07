@@ -12,13 +12,14 @@ import { promisify } from "node:util";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { venvPython } from "../src/lib/venvPython.mjs";
 
 const execFileAsync = promisify(execFile);
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = path.resolve(SCRIPT_DIR, "..");
 const ROOT = path.resolve(WEB_DIR, "..");
-const PYTHON = path.join(ROOT, ".venv", "bin", "python");
+const PYTHON = venvPython(ROOT, process.platform, process.env.UPWORK_PYTHON);
 const SEARCH_SCRIPT = path.join(ROOT, "upwork_search.py");
 const STORE = path.join(WEB_DIR, "data", "subscriptions.jsonl");
 
