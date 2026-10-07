@@ -1,0 +1,43 @@
+# gigradar config — copy to gigradar.toml (gitignored) and edit.
+# NO SECRETS HERE: Telegram bot token/chat id and the proxy URL go in .env
+# (see .env.example). gigradar refuses to start if this file contains them.
+
+[store]
+# SQLite file for seen-job dedup; relative paths resolve against this file's folder.
+path = "data/gigradar.db"
+
+[defaults]
+# Jobs fetched per search per run (1..100). Keep it small: personal volume only.
+limit = 30
+
+[token]
+# Where the Upwork visitor token comes from, tried in order:
+#   "manual" = a token you pasted into .token_cache.json (expires after ~20 min)
+#   "fetch"  = fetch from the Upwork homepage (fails if Cloudflare challenges your IP)
+sources = ["manual", "fetch"]
+# Route token fetch + searches through UPWORK_PROXY (set in .env).
+use_proxy = false
+
+# One [[searches]] block per saved search. Only `name` is required.
+# Allowed values (same as the upwork_search.py CLI):
+#   job_type:     hourly | fixed | weekly_retainer
+#   tier:         entry | intermediate | expert
+#   workload:     part_time | full_time | as_needed
+#   duration:     ongoing | week | month | semester
+#   client_hires: 0 | 1-9 | 10-
+#   hourly_rate:  "MIN-MAX", e.g. "50-100" (implies hourly)
+#   fixed_budget: "MIN-MAX" or "5000-"      (implies fixed)
+#   location:     exact country name, e.g. "United States" (not "US")
+#   contract_to_hire: true
+#   limit:        overrides [defaults].limit
+
+[[searches]]
+name = "python-expert-hourly"
+query = "python"
+tier = "expert"
+hourly_rate = "50-150"
+
+[[searches]]
+name = "nextjs-fixed"
+query = "next.js"
+fixed_budget = "1000-"
