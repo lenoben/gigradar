@@ -7,12 +7,27 @@
 path = "data/gigradar.db"
 
 [defaults]
-# Jobs fetched per search per run (1..100). Keep it small: personal volume only.
+# Jobs fetched per search per run (1..50 = one request per search). Personal volume only.
 limit = 30
 
+[search]
+# How searches reach Upwork:
+#   "webview" = inside a hidden WebView2 page (needs: pip install -r requirements-webview.txt).
+#               Works from a home IP that Cloudflare challenges; the first run may show the
+#               window once so you can click the checkbox.
+#   "curl"    = plain curl_cffi requests (only works un-challenged, e.g. via use_proxy below).
+backend = "webview"
+# WebView2 profile (cookies incl. Cloudflare clearance). Default: %LOCALAPPDATA%\gigradar\webview2
+# webview_profile = "D:/somewhere/else"
+
+[notify]
+# Desktop notifications for new jobs and "click needed". "toast" = Windows toast
+# (needs: pip install -r requirements-toast.txt). Empty = log only.
+channels = ["toast"]
+
 [token]
-# Where the Upwork visitor token comes from, tried in order:
-#   "manual" = a token you pasted into .token_cache.json (expires after ~20 min)
+# curl backend only. Where the Upwork visitor token comes from, tried in order:
+#   "manual" = a token you pasted into .token_cache.json (real cookie expiry if recorded, else ~20 min)
 #   "fetch"  = fetch from the Upwork homepage (fails if Cloudflare challenges your IP)
 sources = ["manual", "fetch"]
 # Route token fetch + searches through UPWORK_PROXY (set in .env).

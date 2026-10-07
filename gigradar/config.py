@@ -12,10 +12,12 @@ from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
 from pathlib import Path
 
-from upwork_search import CLIENT_HIRES, DURATIONS, JOB_TYPES, TIERS, WORKLOADS, SearchFilters
+from upwork_search import CLIENT_HIRES, DURATIONS, JOB_TYPES, PAGE_MAX, TIERS, WORKLOADS, SearchFilters
 
 TOKEN_SOURCES = ("manual", "fetch")
-MAX_LIMIT = 100  # per search per run: personal volume, not a crawl
+BACKENDS = ("webview", "curl")
+NOTIFY_CHANNELS = ("toast",)
+MAX_LIMIT = PAGE_MAX  # one page = exactly one request per search per run
 SECRET_KEYS = {"bot_token", "telegram_bot_token", "chat_id", "telegram_chat_id", "proxy", "proxy_url", "token"}
 
 _FILTER_KEYS = {
@@ -43,6 +45,9 @@ class SearchSpec:
 class Config:
     db_path: Path
     searches: list[SearchSpec]
+    backend: str                    # "webview" (default) | "curl"
+    webview_profile: Path
+    notify_channels: list[str]
     token_sources: list[str]
     use_proxy: bool
     proxy: str | None               # env UPWORK_PROXY
@@ -93,6 +98,20 @@ def load_config(toml_path: Path, environ: Mapping[str, str]) -> Config:
     if len(set(names)) != len(names):
         raise ConfigError(f"duplicate search names: {names}")
 
+    search = _table(data, "search")
+    backend = _get(search, "backend", str, "webview", "search")
+    if backend not in BACKENDS:
+        raise ConfigError(f"search.backend must be one of {BACKENDS}, got {backend!r}")
+    profile = _get(search, "webview_profile", str, None, "search")
+    webview_profile = Path(profile) if profile else default_webview_profile(environ)
+    if not webview_profile.is_absolute():
+        webview_profile = toml_path.parent / webview_profile
+
+    notify = _table(data, "notify")
+    channels = _get(notify, "channels", list, [], "notify")
+    if any(c not in NOTIFY_CHANNELS for c in channels):
+        raise ConfigError(f"notify.channels must be a subset of {NOTIFY_CHANNELS}, got {channels}")
+
     token = _table(data, "token")
     sources = _get(token, "sources", list, ["manual", "fetch"], "token")
     if not sources or any(s not in TOKEN_SOURCES for s in sources):
@@ -105,12 +124,22 @@ def load_config(toml_path: Path, environ: Mapping[str, str]) -> Config:
     return Config(
         db_path=db_path,
         searches=searches,
+        backend=backend,
+        webview_profile=webview_profile,
+        notify_channels=list(channels),
         token_sources=list(sources),
         use_proxy=use_proxy,
         proxy=proxy if use_proxy else None,
         telegram_bot_token=environ.get("TELEGRAM_BOT_TOKEN") or None,
         telegram_chat_id=environ.get("TELEGRAM_CHAT_ID") or None,
     )
+
+
+def default_webview_profile(environ: Mapping[str, str]) -> Path:
+    """%LOCALAPPDATA%\\gigradar\\webview2 on Windows, else ~/.local/share/gigradar/webview2."""
+    base = environ.get("LOCALAPPDATA")
+    root = Path(base) if base else Path.home() / ".local" / "share"
+    return root / "gigradar" / "webview2"
 
 
 def default_paths() -> tuple[Path, Path]:

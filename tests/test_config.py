@@ -47,6 +47,20 @@ class ConfigTest(unittest.TestCase):
         self.assertEqual(cfg.token_sources, ["manual", "fetch"])
         self.assertFalse(cfg.use_proxy)
         self.assertIsNone(cfg.proxy)
+        self.assertEqual(cfg.backend, "webview")
+        self.assertEqual(cfg.notify_channels, [])
+
+    def test_webview_profile_paths(self) -> None:
+        cfg = self.load(MINIMAL, {"LOCALAPPDATA": str(self.dir / "lad")})
+        self.assertEqual(cfg.webview_profile, self.dir / "lad" / "gigradar" / "webview2")
+        cfg = self.load(MINIMAL, {})  # no LOCALAPPDATA (non-Windows)
+        self.assertEqual(cfg.webview_profile, Path.home() / ".local" / "share" / "gigradar" / "webview2")
+        cfg = self.load(MINIMAL + '[search]\nwebview_profile = "prof"\n', {})
+        self.assertEqual(cfg.webview_profile, self.dir / "prof")
+
+    def test_backend_and_channels(self) -> None:
+        cfg = self.load(MINIMAL + '[search]\nbackend = "curl"\n[notify]\nchannels = ["toast"]\n', {})
+        self.assertEqual((cfg.backend, cfg.notify_channels), ("curl", ["toast"]))
 
     def test_secrets_come_from_env(self) -> None:
         env = {"TELEGRAM_BOT_TOKEN": "123:abc", "TELEGRAM_CHAT_ID": "42", "UPWORK_PROXY": "http://p:1"}
@@ -72,7 +86,9 @@ class ConfigTest(unittest.TestCase):
             '[[searches]]\nname = "a"\nhourly_rate = "1-2"\nfixed_budget = "5-"\n': "mutually exclusive",
             '[[searches]]\nname = "a"\nhourly_rate = "1-2"\njob_type = "fixed"\n': "hourly-only",
             '[[searches]]\nname = "a"\nfixed_budget = "5-"\njob_type = "hourly"\n': "fixed-only",
-            '[[searches]]\nname = "a"\nlimit = 500\n': "limit must be 1..100",
+            '[[searches]]\nname = "a"\nlimit = 51\n': "limit must be 1..50",
+            MINIMAL + '[search]\nbackend = "selenium"\n': "search.backend",
+            MINIMAL + '[notify]\nchannels = ["sms"]\n': "notify.channels",
             '[[searches]]\nname = "a"\nlimit = true\n': "must be int",
             MINIMAL + MINIMAL: "duplicate search names",
             MINIMAL + '[token]\nsources = ["browser"]\n': "token.sources",
