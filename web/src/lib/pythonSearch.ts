@@ -9,12 +9,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import type { JobResult, SearchFilters } from "@/lib/types";
+import { venvPython } from "@/lib/venvPython.mjs";
 
 const execFileAsync = promisify(execFile);
 
 // The Next dev server's cwd is <repoRoot>/web, so the repo root is one level up.
 const ROOT = path.resolve(process.cwd(), "..");
-const PYTHON = path.join(ROOT, ".venv", "bin", "python");
+const PYTHON = venvPython(ROOT, process.platform, process.env.UPWORK_PYTHON);
 const SCRIPT = path.join(ROOT, "upwork_search.py");
 
 const LIMIT_DEFAULT = 30;
