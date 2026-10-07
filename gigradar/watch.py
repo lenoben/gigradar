@@ -8,6 +8,9 @@ no retries) · 2 config error · 1 anything else.
 A search's first run seeds silently: what only it found is marked seen, no notification
 blast (also for a search added later). Jobs are marked seen only after the notification
 went out, so a failed notification re-sends them next run.
+
+With [profile] in gigradar.toml, new jobs are scored before alerting (shadow mode: shown
+and sorted, never filtered); a scoring failure alerts them unscored ("Score n/a").
 """
 
 from __future__ import annotations
@@ -16,23 +19,33 @@ import argparse
 import logging
 import os
 import sys
-from collections.abc import Sequence
+import time
+from collections.abc import Callable, Sequence
 from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from gigradar.config import Config, ConfigError, SearchSpec, default_paths, load_config, load_dotenv
-from gigradar.notify import Notifier, build_notifier
+from gigradar.notify import Alert, Notifier, build_notifier
+from gigradar.score import EmbeddingScorer, RuleScorer, Score
 from gigradar.search import UPSTREAM_SEARCH, CurlSearcher, Searcher, SearchFn
-from gigradar.store import established_searches, filter_new, job_id, mark_seen, open_store, record_searches
+from gigradar.store import (SqliteEmbeddingCache, established_searches, filter_new, job_id, mark_seen, open_store,
+                            record_searches, save_scores)
 from gigradar.tokens import StopRun, build_provider
 from upwork_search import Job
 
 log = logging.getLogger("gigradar")
 
 EXIT_OK, EXIT_ERROR, EXIT_CONFIG, EXIT_STOPPED = 0, 1, 2, 75
+# Scoring runs after the search, outside the WebView watchdog. Worst case per run (2 searches):
+# WebView hard limit 440 s + scoring 60 s + one chunk overrun ~7 s + Telegram 5 briefs at the
+# 15 s timeout ~80 s + startup ~5 s = ~592 s < the task's 10 min limit. 60 s still scores ~60 new
+# jobs (2 searches x 30) at ~0.6 s each plus the ~4 s model load; any rest goes out unscored.
+SCORING_BUDGET_S = 60
+SCORING_CHUNK = 10  # jobs per scoring call; the budget is checked between chunks
 
 Results = list[tuple[SearchSpec, list[Job]]]
+ScoreFn = Callable[[list[Job]], list[Score]]
 
 
 def collect(search: SearchFn, specs: Sequence[SearchSpec]) -> tuple[Results, StopRun | None]:
@@ -49,9 +62,11 @@ def collect(search: SearchFn, specs: Sequence[SearchSpec]) -> tuple[Results, Sto
     return results, None
 
 
-def process(conn, results: Results, notifier: Notifier, now: datetime) -> int:
-    """Dedup against the store, seed first-run searches, notify, then mark seen.
-    Returns the number of jobs notified.
+def process(conn, results: Results, notifier: Notifier, now: datetime,
+            score_fn: ScoreFn | None, clock: Callable[[], float]) -> int:
+    """Dedup against the store, seed first-run searches, score + notify, then mark seen.
+    Returns the number of jobs notified. Shadow mode: every new job is alerted, best first;
+    scores are shown and stored, nothing is filtered (min_score comes with calibration).
 
     A new job is alerted if at least one established search found it; a job found only by
     searches on their first run is seeded silently (no blast when a search is added).
@@ -71,21 +86,72 @@ def process(conn, results: Results, notifier: Notifier, now: datetime) -> int:
     if seed:
         log.info("seeded %d jobs silently", len(seed))
     if alert:
-        notifier.notify_jobs(alert)  # raises on failure -> not marked seen -> re-sent next run
+        alerts = score_alerts(alert, score_fn, clock)
+        scored = [a for a in alerts if a.score is not None]
+        save_scores(conn, [a.job for a in scored], [a.score for a in scored], now)
+        notifier.notify_jobs(alerts)  # raises on failure -> not marked seen -> re-sent next run
         mark_seen(conn, alert, now)
     log.info("%d new of %d found", len(alert), len(jobs))
     return len(alert)
 
 
-def run_watch(cfg: Config, searcher: Searcher, notifier: Notifier, conn, now: datetime) -> int:
+def score_alerts(jobs: list[Job], score_fn: ScoreFn | None, clock: Callable[[], float]) -> list[Alert]:
+    """Score the jobs to alert, best first; unscored ones last. Never loses a job: if scoring
+    is off, fails, or runs out of SCORING_BUDGET_S, the rest are alerted unscored ("Score n/a").
+    Scored in chunks so the budget is checked between them (the model loads on the first)."""
+    if score_fn is None:
+        return [Alert(job, None) for job in jobs]
+    deadline = clock() + SCORING_BUDGET_S
+    started = clock()
+    scores: list[Score | None] = []
+    try:
+        for start in range(0, len(jobs), SCORING_CHUNK):
+            if clock() >= deadline:
+                log.warning("scoring budget of %ss used up: %d jobs alerted unscored",
+                            SCORING_BUDGET_S, len(jobs) - len(scores))
+                break
+            scores.extend(score_fn(jobs[start:start + SCORING_CHUNK]))
+    except Exception:  # noqa: BLE001  scoring must never cost an alert; logged with traceback
+        log.exception("scoring failed: %d jobs alerted unscored", len(jobs) - len(scores))
+    scores.extend([None] * (len(jobs) - len(scores)))
+    log.info("scored %d of %d jobs in %.1fs", sum(s is not None for s in scores), len(jobs), clock() - started)
+    alerts = [Alert(job, score) for job, score in zip(jobs, scores, strict=True)]
+    return sorted(alerts, key=lambda a: (a.score is None, -(a.score.value if a.score else 0)))
+
+
+def build_score_fn(cfg: Config, conn, now: datetime) -> ScoreFn | None:
+    """None without [profile]. The model is loaded lazily on the first call, i.e. only in runs
+    that have new jobs to alert (most runs have none), and offline (no network)."""
+    if cfg.profile is None:
+        return None
+    profile, s = cfg.profile, cfg.scoring
+    scorer: list[EmbeddingScorer] = []
+
+    def score(jobs: list[Job]) -> list[Score]:
+        if not scorer:
+            from gigradar.embed import FastEmbedder  # optional dependency: requirements-scoring.txt
+
+            started = time.monotonic()
+            embedder = FastEmbedder(s.model, s.model_dir, offline=True)
+            log.info("scoring model %s loaded in %.1fs", s.model, time.monotonic() - started)
+            scorer.append(EmbeddingScorer(embedder, RuleScorer(s.skill_saturation), SqliteEmbeddingCache(conn, now),
+                                          s.weight_semantic, s.weight_skills, s.cos_low, s.cos_high))
+        return scorer[0].score(jobs, profile)
+
+    return score
+
+
+def run_watch(cfg: Config, searcher: Searcher, notifier: Notifier, conn, now: datetime,
+              score_fn: ScoreFn | None, clock: Callable[[], float]) -> int:
     """One run; returns an exit code. `work` may run on another thread, so the store is
-    only touched here, after searcher.run() returned."""
+    only touched here, after searcher.run() returned. Scoring happens in process(), i.e.
+    after the searcher (and its WebView watchdog) is done: it never eats the search budget."""
     try:
         results, stopped = searcher.run(lambda search: collect(search, cfg.searches))
     except StopRun as exc:
         log.warning("run stopped before searching: %s", exc)
         results, stopped = [], exc
-    process(conn, results, notifier, now)
+    process(conn, results, notifier, now, score_fn, clock)
     return EXIT_STOPPED if stopped else EXIT_OK
 
 
@@ -141,7 +207,7 @@ def main(argv: Sequence[str]) -> int:
         log.exception("store %s could not be opened", cfg.db_path)
         return EXIT_ERROR
     try:
-        return run_watch(cfg, searcher, notifier, conn, now)
+        return run_watch(cfg, searcher, notifier, conn, now, build_score_fn(cfg, conn, now), time.monotonic)
     except Exception:  # noqa: BLE001  log for the scheduler's history, then fail the run
         log.exception("run failed")
         return EXIT_ERROR

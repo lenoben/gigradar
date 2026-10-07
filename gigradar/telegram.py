@@ -1,6 +1,7 @@
 """TelegramNotifier: new-job briefs via the plain Telegram Bot API (stdlib urllib only).
 
-Up to DIGEST_THRESHOLD new jobs -> one brief per job; more -> one digest (titles + links),
+Up to DIGEST_THRESHOLD new jobs -> one brief per job (title, score line, pay, skills,
+description, link); more -> one digest (score + title link + pay per line, best first),
 split into several messages if needed. Every message stays within Telegram's 4096-char
 limit and uses HTML parse mode with all job text escaped.
 
@@ -23,6 +24,8 @@ import urllib.request
 from collections.abc import Callable
 
 from gigradar.jobfields import format_money, parse_amount
+from gigradar.notify import Alert, score_text
+from gigradar.score import Score
 from upwork_search import Job
 
 API = "https://api.telegram.org"
@@ -95,19 +98,29 @@ def _link(job: Job, text: str) -> str:
     return f'<a href="{html.escape(job.url, quote=True)}">{html.escape(text, quote=False)}</a>'
 
 
-def format_brief(job: Job) -> str:
+def format_brief(alert: Alert) -> str:
     """One job as an HTML message, always <= MAX_CHARS. Escaping can grow text up to 5x
     ("&" -> "&amp;"), so if the capped parts still overflow, description and skills shrink."""
     desc_chars, skills_chars = DESCRIPTION_CHARS, SKILLS_CHARS
     while True:
-        text = _brief(job, desc_chars, skills_chars)
+        text = _brief(alert, desc_chars, skills_chars)
         if len(text) <= MAX_CHARS or (desc_chars == 0 and skills_chars == 0):
             return text
         desc_chars, skills_chars = desc_chars // 2, skills_chars // 2
 
 
-def _brief(job: Job, desc_chars: int, skills_chars: int) -> str:
-    lines = [f"<b>{html.escape(_cut(job.title, TITLE_CHARS), quote=False)}</b>"]
+def _score_html(alert: Alert) -> str:
+    """'<b>82</b> · Full-stack web · matched: …' or 'Score n/a' (score_text caps the length)."""
+    text = score_text(alert.score)
+    if alert.score is None:
+        return html.escape(text, quote=False)
+    value, _, rest = text.partition(" · ")
+    return f"<b>{value}</b> · {html.escape(rest, quote=False)}"
+
+
+def _brief(alert: Alert, desc_chars: int, skills_chars: int) -> str:
+    job = alert.job
+    lines = [f"<b>{html.escape(_cut(job.title, TITLE_CHARS), quote=False)}</b>", _score_html(alert)]
     pay = pay_line(job)
     if pay:
         lines.append(html.escape(pay, quote=False))
@@ -122,15 +135,17 @@ def _brief(job: Job, desc_chars: int, skills_chars: int) -> str:
     return "\n".join(lines)
 
 
-def format_digest(jobs: list[Job]) -> list[str]:
-    """Titles + links, split into as many messages as needed, each <= MAX_CHARS.
-    Splits only between whole lines, so no HTML tag is ever cut."""
-    header = f"<b>gigradar: {len(jobs)} new jobs</b>"
+def format_digest(alerts: list[Alert]) -> list[str]:
+    """Score + title link + pay per line, in the given (score) order, split into as many
+    messages as needed, each <= MAX_CHARS. Splits only between whole lines, so no HTML tag is cut."""
+    header = f"<b>gigradar: {len(alerts)} new jobs</b>"
     lines = []
-    for job in jobs:
+    for alert in alerts:
+        job = alert.job
         title = _cut(job.title, TITLE_CHARS)
         pay = pay_line(job)
-        entry = f"• {_link(job, title) if job.url else html.escape(title, quote=False)}"
+        score = f"<b>{alert.score.value}</b>" if alert.score is not None else "n/a"
+        entry = f"• {score} {_link(job, title) if job.url else html.escape(title, quote=False)}"
         lines.append(entry + (f" — {html.escape(pay, quote=False)}" if pay else ""))
     messages, current = [], header
     for line in lines:
@@ -154,8 +169,9 @@ class TelegramNotifier:
         title, message = title[:TITLE_CHARS], message[:STATUS_CHARS]
         self._send(f"<b>{html.escape(title, quote=False)}</b>\n{html.escape(message, quote=False)}")
 
-    def notify_jobs(self, jobs: list[Job]) -> None:
-        messages = [format_brief(job) for job in jobs] if len(jobs) <= DIGEST_THRESHOLD else format_digest(jobs)
+    def notify_jobs(self, alerts: list[Alert]) -> None:
+        messages = ([format_brief(alert) for alert in alerts] if len(alerts) <= DIGEST_THRESHOLD
+                    else format_digest(alerts))
         for i, text in enumerate(messages):
             if i:
                 self._sleep(SEND_PAUSE_S)
@@ -184,16 +200,17 @@ class TelegramNotifier:
         return text.replace(self._token, "<bot-token>") if self._token else text
 
 
-def _sample_job() -> Job:
-    return Job(
+def _sample_alert() -> Alert:
+    job = Job(
         title="gigradar test: Senior Python & <Next.js> engineer for AI tooling",
         url="https://www.upwork.com/jobs/~0123456789abcdef",
         job_type="HOURLY", published=None, hourly_min="50.0", hourly_max="80.0", fixed_budget=None,
         tier="ExpertLevel", skills="Python, Next.js, PostgreSQL, LLM",
         description="This is a sample brief from `python -m gigradar.telegram --test`. "
-                    "It checks bold titles, escaping of <tags> & ampersands, the pay line, "
-                    "skills, a description cut at ~300 characters and the link. " * 3,
+                    "It checks bold titles, the score line, escaping of <tags> & ampersands, the pay "
+                    "line, skills, a description cut at ~300 characters and the link. " * 3,
     )
+    return Alert(job, Score(82, "Sample section · matched: Python, Next.js & <PostgreSQL>", "sample", "0"))
 
 
 def main(argv: list[str]) -> int:
@@ -211,7 +228,7 @@ def main(argv: list[str]) -> int:
         print("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in .env", file=sys.stderr)
         return 2
     try:
-        TelegramNotifier(token, chat_id, urllib_post).notify_jobs([_sample_job()])
+        TelegramNotifier(token, chat_id, urllib_post).notify_jobs([_sample_alert()])
     except TelegramError as exc:
         print(f"Telegram test FAILED: {exc}", file=sys.stderr)
         return 1
