@@ -7,7 +7,7 @@ from pathlib import Path
 
 import upwork_search
 from gigradar.config import SearchSpec
-from gigradar.search import SearchBlocked, run_one
+from gigradar.search import CurlSearcher, SearchBlocked, run_one
 from gigradar.tokens import (ChainProvider, FetchTokenProvider, ManualTokenProvider, StopRun,
                              TokenUnavailable, write_token)
 from upwork_search import Job, SearchFilters
@@ -170,6 +170,13 @@ class SearchTest(unittest.TestCase):
             run_one(SPEC, FakeProvider("tok"), None, self.search_fn(err))
         self.assertIsInstance(ctx.exception, StopRun)
         self.assertEqual(len(self.calls), 1)
+
+    def test_curl_searcher_runs_work_with_single_request_search(self) -> None:
+        job = Job("t", "https://www.upwork.com/jobs/~01", None, None, None, None, None, None, "", "")
+        searcher = CurlSearcher(FakeProvider("tok"), "http://proxy:1", self.search_fn([job]))
+        result = searcher.run(lambda search: [search(SPEC), search(SPEC)])
+        self.assertEqual(result, [[job], [job]])
+        self.assertEqual(self.calls, [(FILTERS, 5, 0, "tok", "http://proxy:1")] * 2)
 
     def test_other_api_errors_propagate(self) -> None:
         err = upwork_search.UpworkAPIError("GraphQL errors: [...]")
