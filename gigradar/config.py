@@ -30,7 +30,9 @@ _CHOICES = {
     "duration": DURATIONS, "client_hires": CLIENT_HIRES,
 }
 _PROFILE_KEYS = {"path", "skills", "min_hourly", "min_fixed", "tiers", "exclude_keywords"}
-_SCORING_KEYS = {"model", "model_dir", "weights", "cos_low", "cos_high", "skill_saturation"}
+_SCORING_KEYS = {"model", "model_dir", "weights", "cos_low", "cos_high", "skill_saturation",
+                 "zero_skill_match", "max_words", "min_score"}
+ZERO_SKILL_MATCH = ("zero", "unknown")
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 
 
@@ -54,6 +56,9 @@ class ScoringConfig:
     cos_low: float                  # best-section cosine at/below this -> semantic 0
     cos_high: float                 # at/above this -> semantic 1 (placeholders until calibrated)
     skill_saturation: int           # this many matched skills = full skill overlap
+    zero_skill_match: str           # "zero": no matched skill = overlap 0; "unknown": semantic part only
+    max_words: int | None           # embed only the first N words of a job; None = whole text
+    min_score: int                  # 0 = shadow mode (alert everything); else jobs below aren't alerted
 
 
 @dataclass(frozen=True)
@@ -280,8 +285,18 @@ def _scoring(table: dict, base: Path, environ: Mapping[str, str]) -> ScoringConf
     saturation = _get(table, "skill_saturation", int, 3, "scoring")
     if saturation < 1:
         raise ConfigError(f"scoring.skill_saturation must be >= 1, got {saturation}")
+    zero_skill_match = _get(table, "zero_skill_match", str, "zero", "scoring")
+    if zero_skill_match not in ZERO_SKILL_MATCH:
+        raise ConfigError(f"scoring.zero_skill_match must be one of {ZERO_SKILL_MATCH}, got {zero_skill_match!r}")
+    max_words = _get(table, "max_words", int, None, "scoring")
+    if max_words is not None and max_words < 20:
+        raise ConfigError(f"scoring.max_words must be >= 20 (or absent for the whole text), got {max_words}")
+    min_score = _get(table, "min_score", int, 0, "scoring")
+    if not 0 <= min_score <= 100:
+        raise ConfigError(f"scoring.min_score must be 0..100, got {min_score}")
     return ScoringConfig(model=model, model_dir=model_dir, weight_semantic=semantic, weight_skills=skills,
-                         cos_low=cos_low, cos_high=cos_high, skill_saturation=saturation)
+                         cos_low=cos_low, cos_high=cos_high, skill_saturation=saturation,
+                         zero_skill_match=zero_skill_match, max_words=max_words, min_score=min_score)
 
 
 def _number(table: dict, key: str, fallback: float, where: str) -> float:

@@ -1,6 +1,6 @@
 # Phase 2: job scoring against my profile
 
-Status: **plan approved (2026-10-07); steps 1–5 (part A) built; 1–2 merged to main.** Branch: `feat/scoring`.
+Status: **plan approved (2026-10-07); steps 1–5 merged to main (2026-10-07); step 6 built on `feat/labeling`.**
 Start here in a new session, together with `CLAUDE.local.md` (Phase 1 architecture + repo rules).
 
 ## Goal
@@ -237,7 +237,20 @@ SQLite** with a scorer name, so an MCP-written score is just another scorer.
    task's time limit is raised from 10 to 15 min for margin (re-register after the merge). Output: Telegram brief line 2 `<b>82</b> · <section> · matched: …` (<= 160 chars),
    digest lines `• <b>82</b> <title link> — <pay>`, toast `N new jobs (top 82)` with scored
    titles, log one line per alert.
-6. Labeling CLI + `--eval`; tune weights/threshold on ~50 labels.
+6. Labeling CLI + `--eval`; tune weights/threshold on ~50 labels. **Built (branch `feat/labeling`).**
+   `python -m gigradar.label`: unlabeled stored jobs in mixed score order (top/middle/bottom
+   third in turn), score hidden unless `--show-score`, my matched skills marked ✓; keys y/n/s/u/q,
+   each answer saved at once (resumable). `--eval` (`gigradar/evaluate.py`, stdlib): AUC (rank
+   based), precision@5/@10, bootstrap 95% intervals (paired for "vs current"), fixed variant list:
+   current, zero skill match flipped, semantic only, skills only, weights 0.5/0.5 and 0.85/0.15,
+   first 200 words, rules only, BM25 baseline. The report leads with the 👍/👎 counts; under 10
+   in a class it says UNRELIABLE and recommends nothing. A variant is recommended only if it
+   beats the current AUC by >= 0.05 with a paired interval above 0; then a threshold table and a
+   suggested `min_score` keeping >= 95% of 👍. `--show-misses` lists the worst disagreements.
+   New `[scoring]` keys (defaults = previous behaviour): `zero_skill_match` ("zero"/"unknown",
+   the user's note: 3 good jobs scored ~20 with zero matched labels), `max_words`, `min_score`
+   (0 = shadow mode; jobs below it are scored + marked seen, logged as filtered, not alerted;
+   unscored jobs are never filtered). bge-base only if the eval shows the semantic part is weak.
 7. Optional `LLMScorer` (own branch; provider decided then).
 
 Live checks (user runs them): step 4 model download + one scoring dry run on stored jobs;

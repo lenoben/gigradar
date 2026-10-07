@@ -59,6 +59,12 @@ use_proxy = false
 # cos_low = 0.45
 # cos_high = 0.80
 # skill_saturation = 3               # this many matched skills = full skill score
+# # A job listing skills of which none match: "zero" = skill score 0, "unknown" = semantic part only.
+# zero_skill_match = "zero"
+# # max_words = 200                  # embed only the first N words (faster); default: whole text
+# # Jobs scoring below this are stored and marked seen but not alerted. 0 = alert everything.
+# # Pick it from your labels: python -m gigradar.label, then python -m gigradar.label --eval
+# min_score = 0
 
 # One [[searches]] block per saved search. Only `name` is required.
 # Allowed values (same as the upwork_search.py CLI):

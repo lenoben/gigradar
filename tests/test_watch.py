@@ -7,6 +7,7 @@ import tempfile
 import threading
 import time
 import unittest
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -336,6 +337,33 @@ class ScoringWatchTest(unittest.TestCase):
             self.run_with({"a": [job("~4")], "b": []}, FakeScoreFn(), FakeNotifier(True))
         self.assertEqual(self.stored_scores(), [("~4", 40)])
         self.assertEqual(seen_count(self.conn), 0)  # re-sent next run
+
+    def with_min_score(self, value: int) -> None:
+        self.cfg = replace(self.cfg, scoring=replace(self.cfg.scoring, min_score=value))
+
+    def test_min_score_filters_scored_jobs_but_marks_them_seen(self) -> None:
+        self.with_min_score(50)
+        with self.assertLogs("gigradar", "INFO") as logs:
+            code, notifier = self.run_with({"a": [job("~3"), job("~9")], "b": [job("~5")]}, FakeScoreFn())
+        self.assertEqual(code, EXIT_OK)
+        self.assertEqual(notifier.batches, [["~9", "~5"]])  # 30 < 50: filtered
+        self.assertEqual(seen_count(self.conn), 3)          # decided: never alerted later
+        self.assertEqual(self.stored_scores(), [("~3", 30), ("~5", 50), ("~9", 90)])
+        self.assertTrue(any("filtered (below min_score 50): 30 · Sec · matched: X | job ~3" in line
+                            for line in logs.output))
+        self.assertTrue(any("3 new of 3 found, 1 below min_score 50" in line for line in logs.output))
+
+    def test_min_score_never_filters_unscored_jobs(self) -> None:
+        self.with_min_score(99)
+        with self.assertLogs("gigradar", "ERROR"):
+            _, notifier = self.run_with({"a": [job("~3")], "b": []}, FakeScoreFn(fail_on_call=1))
+        self.assertEqual(notifier.batches, [["~3"]])  # "Score n/a" always goes out
+
+    def test_everything_filtered_sends_nothing(self) -> None:
+        self.with_min_score(95)
+        _, notifier = self.run_with({"a": [job("~3"), job("~5")], "b": []}, FakeScoreFn())
+        self.assertEqual(notifier.batches, [])
+        self.assertEqual(seen_count(self.conn), 2)
 
     def test_build_score_fn(self) -> None:
         self.assertIsNone(build_score_fn(self.cfg, self.conn, NOW))  # no [profile]: scoring off

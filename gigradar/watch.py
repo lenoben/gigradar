@@ -26,8 +26,8 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from gigradar.config import Config, ConfigError, SearchSpec, default_paths, load_config, load_dotenv
-from gigradar.notify import Alert, Notifier, build_notifier
-from gigradar.score import EmbeddingScorer, RuleScorer, Score
+from gigradar.notify import Alert, Notifier, build_notifier, score_text
+from gigradar.score import EmbeddingScorer, Score, scorer_from_config
 from gigradar.search import UPSTREAM_SEARCH, CurlSearcher, Searcher, SearchFn
 from gigradar.store import (SqliteEmbeddingCache, established_searches, filter_new, job_id, mark_seen, open_store,
                             record_searches, save_scores)
@@ -64,10 +64,11 @@ def collect(search: SearchFn, specs: Sequence[SearchSpec]) -> tuple[Results, Sto
 
 
 def process(conn, results: Results, notifier: Notifier, now: datetime,
-            score_fn: ScoreFn | None, clock: Callable[[], float]) -> int:
+            score_fn: ScoreFn | None, clock: Callable[[], float], min_score: int) -> int:
     """Dedup against the store, seed first-run searches, score + notify, then mark seen.
-    Returns the number of jobs notified. Shadow mode: every new job is alerted, best first;
-    scores are shown and stored, nothing is filtered (min_score comes with calibration).
+    Returns the number of jobs notified, best first. min_score 0 = shadow mode: everything is
+    alerted. Otherwise scored jobs below min_score are stored, scored and marked seen, but not
+    alerted (logged as filtered); unscored jobs ("Score n/a") are never filtered.
 
     A new job is alerted if at least one established search found it; a job found only by
     searches on their first run is seeded silently (no blast when a search is added).
@@ -86,14 +87,21 @@ def process(conn, results: Results, notifier: Notifier, now: datetime,
             log.info("search %r: first run, seeded silently", spec.name)
     if seed:
         log.info("seeded %d jobs silently", len(seed))
+    notified: list[Alert] = []
     if alert:
         alerts = score_alerts(alert, score_fn, clock)
         scored = [a for a in alerts if a.score is not None]
         save_scores(conn, [a.job for a in scored], [a.score for a in scored], now)
-        notifier.notify_jobs(alerts)  # raises on failure -> not marked seen -> re-sent next run
-        mark_seen(conn, alert, now)
-    log.info("%d new of %d found", len(alert), len(jobs))
-    return len(alert)
+        notified = [a for a in alerts if a.score is None or a.score.value >= min_score]
+        for a in alerts:
+            if a not in notified:
+                log.info("filtered (below min_score %d): %s | %s", min_score, score_text(a.score), a.job.title)
+        if notified:
+            notifier.notify_jobs(notified)  # raises on failure -> not marked seen -> re-sent next run
+        mark_seen(conn, alert, now)  # filtered ones too: decided, never alerted later
+    filtered = f", {len(alert) - len(notified)} below min_score {min_score}" if min_score else ""
+    log.info("%d new of %d found%s", len(alert), len(jobs), filtered)
+    return len(notified)
 
 
 def score_alerts(jobs: list[Job], score_fn: ScoreFn | None, clock: Callable[[], float]) -> list[Alert]:
@@ -135,8 +143,7 @@ def build_score_fn(cfg: Config, conn, now: datetime) -> ScoreFn | None:
             started = time.monotonic()
             embedder = FastEmbedder(s.model, s.model_dir, offline=True)
             log.info("scoring model %s loaded in %.1fs", s.model, time.monotonic() - started)
-            scorer.append(EmbeddingScorer(embedder, RuleScorer(s.skill_saturation), SqliteEmbeddingCache(conn, now),
-                                          s.weight_semantic, s.weight_skills, s.cos_low, s.cos_high))
+            scorer.append(scorer_from_config(embedder, s, SqliteEmbeddingCache(conn, now)))
         return scorer[0].score(jobs, profile)
 
     return score
@@ -152,7 +159,7 @@ def run_watch(cfg: Config, searcher: Searcher, notifier: Notifier, conn, now: da
     except StopRun as exc:
         log.warning("run stopped before searching: %s", exc)
         results, stopped = [], exc
-    process(conn, results, notifier, now, score_fn, clock)
+    process(conn, results, notifier, now, score_fn, clock, cfg.scoring.min_score)
     return EXIT_STOPPED if stopped else EXIT_OK
 
 
