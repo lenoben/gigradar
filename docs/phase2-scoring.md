@@ -224,7 +224,14 @@ SQLite** with a scorer name, so an MCP-written score is just another scorer.
 Live checks (user runs them): step 4 model download + one scoring dry run on stored jobs;
 step 5 one scheduled run with scores in Telegram; step 6 labeling session.
 
-## Constraints (unchanged)
+## Constraints
 
 No auto-submitting proposals, no per-minute polling, personal volume only. No secrets in the
 TOML. Never commit `profile.md`, `profile_sources/`, `gigradar.toml`, `.env`, `data/`, models or logs.
+
+**Personal data lives only in gitignored files; committed files stay generic**, so anyone who
+clones gigradar gets their own app. Personal: `gigradar.toml` (searches, profile settings), `.env`
+(bot token, chat id, proxy), `profile.md`, `profile_sources/`, `data/`, `logs/`, models (outside
+the repo). Committed code, docs, `*.example.*` templates and tests use only generic examples and
+placeholders: no machine paths, user names, bot names, chat ids, tokens, real searches or real
+profile text. Tests use temp dirs and invented jobs.
