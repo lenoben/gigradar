@@ -7,6 +7,8 @@ __pycache__/
 # local / personal
 CLAUDE.local.md
 gigradar.toml
+profile.md
+profile_sources/
 data/
 logs/
 .claude/settings.local.json

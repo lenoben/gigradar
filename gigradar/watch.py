@@ -5,9 +5,9 @@
 Exit codes: 0 ok · 75 stopped early (no token / blocked; try at the next scheduled run,
 no retries) · 2 config error · 1 anything else.
 
-The very first run (empty store) seeds silently: everything found is marked seen, no
-notification blast. Jobs are marked seen only after the notification went out, so a
-failed notification re-sends them next run.
+A search's first run seeds silently: what only it found is marked seen, no notification
+blast (also for a search added later). Jobs are marked seen only after the notification
+went out, so a failed notification re-sends them next run.
 """
 
 from __future__ import annotations
@@ -24,7 +24,7 @@ from pathlib import Path
 from gigradar.config import Config, ConfigError, SearchSpec, default_paths, load_config, load_dotenv
 from gigradar.notify import Notifier, build_notifier
 from gigradar.search import UPSTREAM_SEARCH, CurlSearcher, Searcher, SearchFn
-from gigradar.store import filter_new, mark_seen, open_store, seen_count
+from gigradar.store import established_searches, filter_new, job_id, mark_seen, open_store, record_searches
 from gigradar.tokens import StopRun, build_provider
 from upwork_search import Job
 
@@ -50,19 +50,31 @@ def collect(search: SearchFn, specs: Sequence[SearchSpec]) -> tuple[Results, Sto
 
 
 def process(conn, results: Results, notifier: Notifier, now: datetime) -> int:
-    """Dedup against the store, notify, then mark seen. Returns the number of new jobs."""
+    """Dedup against the store, seed first-run searches, notify, then mark seen.
+    Returns the number of jobs notified.
+
+    A new job is alerted if at least one established search found it; a job found only by
+    searches on their first run is seeded silently (no blast when a search is added).
+    Seeding and search registration are committed BEFORE notifying: if the notification
+    fails, the alert jobs stay unseen (re-sent next run) and new searches aren't re-seeded."""
     jobs = [job for _, found in results for job in found]
-    seeding = seen_count(conn) == 0
+    established = established_searches(conn)
+    alertable = {job_id(job) for spec, found in results if spec.name in established for job in found}
     new = filter_new(conn, jobs)
-    if seeding:
-        mark_seen(conn, new, now)
-        log.info("first run: seeded %d jobs silently", len(new))
-        return 0
-    if new:
-        notifier.notify_jobs(new)  # raises on failure -> not marked seen -> re-sent next run
-    mark_seen(conn, new, now)
-    log.info("%d new of %d found", len(new), len(jobs))
-    return len(new)
+    alert = [job for job in new if job_id(job) in alertable]
+    seed = [job for job in new if job_id(job) not in alertable]
+
+    record_searches(conn, [(spec.name, found) for spec, found in results], seed, now)
+    for spec, _ in results:
+        if spec.name not in established:
+            log.info("search %r: first run, seeded silently", spec.name)
+    if seed:
+        log.info("seeded %d jobs silently", len(seed))
+    if alert:
+        notifier.notify_jobs(alert)  # raises on failure -> not marked seen -> re-sent next run
+        mark_seen(conn, alert, now)
+    log.info("%d new of %d found", len(alert), len(jobs))
+    return len(alert)
 
 
 def run_watch(cfg: Config, searcher: Searcher, notifier: Notifier, conn, now: datetime) -> int:
@@ -121,9 +133,15 @@ def main(argv: Sequence[str]) -> int:
         log.error("config: %s", exc)
         return EXIT_CONFIG
 
-    conn = open_store(cfg.db_path)
+    now = datetime.now(timezone.utc)
     try:
-        return run_watch(cfg, searcher, notifier, conn, datetime.now(timezone.utc))
+        # adopt: on a v1 -> v2 migration, the configured searches count as established
+        conn = open_store(cfg.db_path, [s.name for s in cfg.searches], now)
+    except Exception:  # noqa: BLE001  migration/open errors must reach the log under pythonw
+        log.exception("store %s could not be opened", cfg.db_path)
+        return EXIT_ERROR
+    try:
+        return run_watch(cfg, searcher, notifier, conn, now)
     except Exception:  # noqa: BLE001  log for the scheduler's history, then fail the run
         log.exception("run failed")
         return EXIT_ERROR

@@ -35,6 +35,19 @@ sources = ["manual", "fetch"]
 # Route token fetch + searches through UPWORK_PROXY (set in .env).
 use_proxy = false
 
+# Job scoring against your profile. Uncomment [profile] to enable it; without it, no scoring.
+# [profile]
+# # Skill areas as free text, one "## Heading" per area (copy profile.example.md).
+# # Relative paths resolve against this file's folder. Missing file = config error.
+# path = "profile.md"
+# # Job skills you have; each one the job also lists raises its score.
+# skills = ["Rust", "Go", "PostgreSQL", "Next.js", "TypeScript", "Python"]
+# # Hard rules: a job failing one scores 0. A job without rate/budget data passes.
+# min_hourly = 50         # USD; hourly jobs whose max rate is below this
+# min_fixed = 1000        # USD; fixed jobs whose budget is below this
+# tiers = ["intermediate", "expert"]   # allowed tiers; omit or [] = any
+# exclude_keywords = ["WordPress", "unpaid test"]   # in title or description
+
 # One [[searches]] block per saved search. Only `name` is required.
 # Allowed values (same as the upwork_search.py CLI):
 #   job_type:     hourly | fixed | weekly_retainer
