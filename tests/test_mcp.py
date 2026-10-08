@@ -11,7 +11,7 @@ import sys
 import tempfile
 import threading
 import unittest
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -180,7 +180,9 @@ class SqliteGuardTest(StoreCase):
 class ProfileAndConfigTest(unittest.TestCase):
     def test_profile_view_is_the_profile_only(self) -> None:
         view = mcp_tools.profile_view(PROFILE)
-        self.assertEqual(set(view), {"skill_areas", "skills", "hard_rules"})
+        self.assertEqual(set(view), {"skill_areas", "skills", "hard_rules", "constraints"})
+        self.assertEqual(view["constraints"], "Remote only; no on-site work")
+        self.assertIsNone(mcp_tools.profile_view(replace(PROFILE, constraints=None))["constraints"])
         self.assertEqual(view["hard_rules"]["min_hourly_usd"], 50.0)
         self.assertEqual(view["skill_areas"], [{"heading": "Rust backend", "text": "axum"}])
 

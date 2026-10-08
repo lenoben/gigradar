@@ -67,6 +67,7 @@ class ProfileConfigTest(unittest.TestCase):
         self.assertEqual((profile.skills, profile.tiers, profile.exclude_keywords), ([], [], []))
         self.assertIsNone(profile.min_hourly)
         self.assertIsNone(profile.min_fixed)
+        self.assertIsNone(profile.constraints)
 
     def test_full(self) -> None:
         (self.dir / "me").mkdir()
@@ -78,6 +79,10 @@ class ProfileConfigTest(unittest.TestCase):
         self.assertEqual(profile.skills, ["Rust", "Next.js"])
         self.assertEqual((profile.min_hourly, profile.min_fixed), (50.0, 999.5))
         self.assertEqual((profile.tiers, profile.exclude_keywords), (["expert"], ["WordPress"]))
+
+    def test_constraints(self) -> None:
+        self.assertEqual(self.load('[profile]\nconstraints = "  Remote only  "\n').profile.constraints, "  Remote only  ")
+        self.assertIsNone(self.load('[profile]\nconstraints = ""\n').profile.constraints)   # empty = none given
 
     def test_example_toml_block_is_valid(self) -> None:
         """The commented [profile] block in gigradar.example.toml, uncommented, must load."""
@@ -91,6 +96,7 @@ class ProfileConfigTest(unittest.TestCase):
         profile = self.load("\n".join(block) + "\n").profile
         self.assertEqual(profile.tiers, ["intermediate", "expert"])
         self.assertEqual(profile.min_hourly, 50.0)
+        self.assertIn("Remote only", profile.constraints)
 
     def test_errors(self) -> None:
         cases = {
@@ -101,6 +107,7 @@ class ProfileConfigTest(unittest.TestCase):
             '[profile]\nskills = ["Rust", 3]\n': "list of non-empty strings",
             '[profile]\nexclude_keywords = [" "]\n': "list of non-empty strings",
             '[profile]\ntiers = ["Expert"]\n': "profile.tiers must be a subset",
+            "[profile]\nconstraints = 5\n": "profile.constraints must be str",
             "[profile]\nmin_hourly = -1\n": "non-negative number",
             "[profile]\nmin_fixed = true\n": "non-negative number",
             '[profile]\nmin_fixed = "1000"\n': "non-negative number",

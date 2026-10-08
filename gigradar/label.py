@@ -23,7 +23,7 @@ from typing import TextIO
 
 from gigradar.notify import score_text
 from gigradar.score import Score, job_skills, normalize_skill
-from gigradar.store import delete_label, job_id, load_labels, save_label
+from gigradar.store import delete_label, job_id, load_labels, load_labels_since, save_label
 from gigradar.telegram import pay_line
 from upwork_search import Job
 
@@ -94,7 +94,26 @@ def session(conn, jobs: Sequence[Job], scores: dict[str, Score] | None, my_skill
     return len(done)
 
 
-def diff_report(conn, profile, scoring, embedder, version_a: str, version_b: str, out: TextIO) -> None:
+def parse_date(text: str) -> datetime:
+    """YYYY-MM-DD as midnight UTC (labels are stamped in UTC)."""
+    try:
+        return datetime.strptime(text, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"{text!r} is not a date (use YYYY-MM-DD)") from None
+
+
+def eval_labels(conn, since: datetime | None, out: TextIO) -> dict[str, int]:
+    """The labels --eval / --claude-diff work on: all of them, or only those created on or after `since`."""
+    everything = load_labels(conn)
+    if since is None:
+        return everything
+    labels = load_labels_since(conn, since)
+    print(f"labels created on or after {since:%Y-%m-%d} (UTC) only: {len(labels)} of {len(everything)}", file=out)
+    return labels
+
+
+def diff_report(conn, profile, scoring, embedder, version_a: str, version_b: str, since: datetime | None,
+                out: TextIO) -> None:
     """--eval --claude-diff: two rubric versions' claude scores side by side on the labeled jobs, with the
     embedding scores. Reads only: the connection is query_only and new embeddings stay in memory."""
     from gigradar.evaluate import claude_diff, print_claude_diff
@@ -102,7 +121,7 @@ def diff_report(conn, profile, scoring, embedder, version_a: str, version_b: str
     from gigradar.score import ReadOnlyEmbeddingCache, scorer_from_config
     from gigradar.store import SqliteEmbeddingCache, load_scores, stored_jobs
 
-    labels = load_labels(conn)
+    labels = eval_labels(conn, since, out)
     labeled = [j for j in stored_jobs(conn) if job_id(j) in labels]
     scores = {v: load_scores(conn, SCORER, v) for v in (version_a, version_b)}
     cache = ReadOnlyEmbeddingCache(SqliteEmbeddingCache(conn, datetime.now(timezone.utc)))  # put() is never reached
@@ -114,7 +133,7 @@ def diff_report(conn, profile, scoring, embedder, version_a: str, version_b: str
                       version_a, version_b, out)
 
 
-def run_diff(cfg, version_a: str, version_b: str) -> int:
+def run_diff(cfg, version_a: str, version_b: str, since: datetime | None) -> int:
     """Opens the store without creating or migrating it, and read-only."""
     from gigradar.embed import EmbedderError, FastEmbedder
     from gigradar.store import StoreError, open_existing
@@ -131,7 +150,7 @@ def run_diff(cfg, version_a: str, version_b: str) -> int:
         except EmbedderError as exc:
             print(f"error: {exc}", file=sys.stderr)
             return 1
-        diff_report(conn, cfg.profile, cfg.scoring, embedder, version_a, version_b, sys.stdout)
+        diff_report(conn, cfg.profile, cfg.scoring, embedder, version_a, version_b, since, sys.stdout)
         return 0
     finally:
         conn.close()
@@ -154,11 +173,15 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--claude-diff", nargs=2, metavar=("A", "B"),
                         help="with --eval: compare claude scores of rubric versions A and B on the labeled jobs "
                              "(read-only; prints this instead of the usual report)")
+    parser.add_argument("--labeled-after", type=parse_date, default=None, metavar="YYYY-MM-DD",
+                        help="with --eval / --claude-diff: only labels created on or after this date (UTC)")
     parser.add_argument("--claude-version", default=RUBRIC_VERSION,
                         help="with --eval: which rubric version's claude scores to compare (default: the current one)")
     args = parser.parse_args(argv)
     if args.claude_diff and not args.eval:
         parser.error("--claude-diff needs --eval")
+    if args.labeled_after and not args.eval:
+        parser.error("--labeled-after needs --eval")
     if args.claude_diff and args.claude_diff[0] == args.claude_diff[1]:
         parser.error("--claude-diff needs two different versions")
 
@@ -173,7 +196,7 @@ def main(argv: Sequence[str]) -> int:
         print("config: no [profile] table in gigradar.toml (and it needs profile.md)", file=sys.stderr)
         return 2
     if args.claude_diff:
-        return run_diff(cfg, args.claude_diff[0], args.claude_diff[1])
+        return run_diff(cfg, args.claude_diff[0], args.claude_diff[1], args.labeled_after)
     now = datetime.now(timezone.utc)
     conn = open_store(cfg.db_path, [s.name for s in cfg.searches], now)
     try:
@@ -188,7 +211,7 @@ def main(argv: Sequence[str]) -> int:
             print(f"warning: no scores ({exc}); jobs come newest first", file=sys.stderr)
             embedder = None
         if args.eval:
-            labels = load_labels(conn)
+            labels = eval_labels(conn, args.labeled_after, sys.stdout)
             labeled = [j for j in jobs if job_id(j) in labels]
             values = [labels[job_id(j)] for j in labeled]
             variants = build_variants(labeled, cfg.profile, cfg.scoring, embedder, cache) if labeled else []

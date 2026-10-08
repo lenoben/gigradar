@@ -17,6 +17,7 @@ PROFILE = Profile(
     path=Path("profile.md"), sections=[ProfileSection("Rust backend", "axum")],
     skills=["Rust", "PostgreSQL", "Next.js", "C#"], min_hourly=50.0, min_fixed=1000.0,
     tiers=["intermediate", "expert"], exclude_keywords=["WordPress", "unpaid test", "C++"],
+    constraints="Remote only; no on-site work",
 )
 
 

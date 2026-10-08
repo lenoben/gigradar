@@ -33,6 +33,7 @@ class Profile:
     min_fixed: float | None        # fixed jobs whose budget is below this fail the hard rules
     tiers: list[str]               # allowed tiers; empty = any
     exclude_keywords: list[str]
+    constraints: str | None        # free text: where/when/how I can work; read by Claude's rubric only
 
 
 def parse_sections(markdown: str) -> list[ProfileSection]:

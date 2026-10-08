@@ -26,7 +26,7 @@ and `set_score` once per job. The rubric (`gigradar/rubric.py`) is generic; it r
 
 | Tool | Does |
 |---|---|
-| `get_profile` | skill areas, skills, hard rules from your profile. Never any secret. |
+| `get_profile` | skill areas, skills, hard rules and `constraints` from your profile. Never any secret. |
 | `get_unscored_jobs(limit)` | newest-first jobs without a `claude` score for the current rubric version. Use limit 10; the cap is 20 (50 overflowed one tool result) |
 | `get_job(job_id, include_scores)` | one job, full description. `include_scores=true` also shows your label and every stored score: **inspection only** |
 | `set_score(job_id, value, reason)` | value 0–100, reason one line ≤ 200 characters |
@@ -34,6 +34,27 @@ and `set_score` once per job. The rubric (`gigradar/rubric.py`) is generic; it r
 Scores are stored as scorer `claude`, version = the rubric version. **Changing the rubric text means
 bumping `RUBRIC_VERSION`** (a test pins both); old scores stay, and jobs are offered again for the new
 version.
+
+## Rubric versions
+
+The rubric text lives in `gigradar/rubric.py`; only the current version is kept there, older texts stay
+in git (`git show 6c84cfb:gigradar/rubric.py` is version 1, `git show 3ef421b:gigradar/rubric.py` is 2).
+
+- **1**: first rubric. **2**: batches of 10 jobs per call.
+- **3**: general principles added. Seniority is not a penalty (senior/lead/expert titles and end-to-end
+  ownership are neutral or positive when the stack fits). Pay lowers the score only when the posting
+  states a concrete rate or budget that is clearly below the matching minimum in your profile (then
+  0-9; a small but possible amount such as $5 or $10 counts as stated); a missing, vague or implausible budget
+  (only obvious placeholders like 0 or 1) is a note in the reason and costs nothing. Genuine red flags (breaking a platform's terms, impersonating
+  someone on calls, upfront payment, credential sharing) score at most 29. Hard requirements that your
+  `constraints` rule out (location, time zone, on-site, language) score at most 10, like an excluded
+  keyword. The 0-9 band became 0-10.
+
+`constraints` is an optional, per-user free-text key in `[profile]` of `gigradar.toml` (for example your
+location, time zone and "remote only"); everyone sets their own or leaves it out. Only this rubric reads
+it, through `get_profile`. Without it, the rubric has no location rule. Keep it in your gitignored
+`gigradar.toml`; the committed rubric and example stay generic. An older gigradar that does not know the
+key rejects the config ("unknown keys"), so update the code before adding it.
 
 ## Blind scoring
 
@@ -78,3 +99,7 @@ For the labeled jobs scored in both versions it lists those whose scores differ 
 both scores, difference, the embedding score, title), biggest difference first, then prints per version
 the mean Claude score of your 👍 and 👎 jobs and its Spearman correlation with the embedding scores.
 It is read-only: it never writes to the store, not even embeddings.
+
+Both `--eval` and `--eval --claude-diff` accept `--labeled-after YYYY-MM-DD`: only labels created on or
+after that date (UTC, midnight to midnight) count, for example to judge a later relabel round on its own.
+The output says how many labels were kept.
