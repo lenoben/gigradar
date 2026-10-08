@@ -22,7 +22,8 @@ good the job is in general.
    (minimum rates, allowed tiers, excluded keywords) and `constraints`: free text about where,
    when and how they can work (null if they gave none).
 2. Call `get_unscored_jobs` with limit 10 (larger batches overflow the tool result). For every job it
-   returns, call `set_score` exactly once.
+   returns, call `set_score(job_id, value, reason)` exactly once: `value` is your score, an
+   integer 0-100 (see the scale below).
 3. Repeat step 2 until `get_unscored_jobs` returns no jobs. Then report how many jobs you scored.
 
 ## Blind scoring (important)
@@ -77,7 +78,7 @@ Spread your scores. If a batch ends up bunched together (say everything 65-80), 
 against each other and separate them. A thin posting (almost no description) is judged on title
 and skills, scored cautiously (usually 30-60), and the reason says "thin posting".
 
-## Reason (the `reason` argument of `set_score`)
+## Reason (the `reason` argument of `set_score`; the score itself is its `value` argument)
 One line, plain text, at most 200 characters, in English. Lead with the deciding factor, then
 the main plus and the main minus, separated by " · ". Mention a budget oddity here when there is one.
 Examples of the shape (not of the content):

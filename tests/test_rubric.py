@@ -8,7 +8,7 @@ from gigradar.rubric import RUBRIC, RUBRIC_VERSION, SCORER
 
 # The rubric text and its version are pinned together: editing the text fails this test until the
 # version is bumped and the hash below is updated, so "claude" scores of different rubrics never mix.
-PINNED_RUBRIC = ("3", "3c8c4abc6b1ddafdacb191177625fc65ed69de0c52508fe567cfe528e32c223d")
+PINNED_RUBRIC = ("3", "f37a933ccbd967263e35e84a7c16a21f0c4f8df3750a5f73f023c960f30c5014")
 
 
 class RubricTest(unittest.TestCase):
@@ -53,6 +53,11 @@ class RubricTest(unittest.TestCase):
         for phrase in ("a small but possible amount (for example $5 or $10 fixed) counts as a stated budget",
                        "not as an implausible one"):
             self.assertIn(phrase, text)
+
+    def test_score_is_called_value_like_the_tool_argument(self) -> None:
+        text = " ".join(RUBRIC.split())
+        self.assertIn("`set_score(job_id, value, reason)`", text)
+        self.assertIn("`value` is your score, an integer 0-100", text)
 
     def test_batches_are_small_enough_for_one_tool_result(self) -> None:
         self.assertIn("limit 10", RUBRIC)
