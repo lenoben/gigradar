@@ -297,6 +297,11 @@ def load_labels(conn: sqlite3.Connection) -> dict[str, int]:
     return dict(conn.execute("SELECT job_id, label FROM labels"))
 
 
+def load_labels_since(conn: sqlite3.Connection, since: datetime) -> dict[str, int]:
+    """Labels created at or after `since` (timestamps are stored as UTC ISO strings, which sort by time)."""
+    return dict(conn.execute("SELECT job_id, label FROM labels WHERE labeled_at >= ?", (since.isoformat(),)))
+
+
 class SqliteEmbeddingCache:
     """Embeddings in the `embeddings` table, keyed by (key, model): a job (key = its ~cipher) is
     embedded once per model, never again on re-runs or re-scoring. Profile sections are cached

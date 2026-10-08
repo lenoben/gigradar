@@ -4,13 +4,14 @@ import io
 import tempfile
 import unittest
 from dataclasses import replace
-from datetime import datetime, timezone
+import argparse
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from unittest import mock
 
 from gigradar.config import load_config
 from gigradar.evaluate import DIFF_MIN, claude_diff, print_claude_diff, spearman
-from gigradar.label import diff_report, main
+from gigradar.label import diff_report, eval_labels, main, parse_date
 from gigradar.score import Score
 from gigradar.store import mark_seen, open_store, save_job_score, save_label
 from test_embed_score import PROFILE2, FakeEmbedder
@@ -116,7 +117,7 @@ class DiffReportTest(unittest.TestCase):
         self.conn = open_store(Path(":memory:"), [], NOW)
         mark_seen(self.conn, JOBS, NOW)
         for jid, label in LABELS.items():
-            save_label(self.conn, jid, label, NOW)
+            save_label(self.conn, jid, label, NOW - timedelta(days=2) if jid in ("~00", "~01", "~02") else NOW)
         for version, values in (("1", A), ("2", B)):
             for jid, value in values.items():
                 save_job_score(self.conn, jid, Score(value, "r", "claude", version), NOW)
@@ -132,7 +133,7 @@ class DiffReportTest(unittest.TestCase):
     def test_prints_the_comparison_and_writes_nothing(self) -> None:
         before = self.counts()
         out = io.StringIO()
-        diff_report(self.conn, PROFILE2, self.scoring, FakeEmbedder("fake"), "1", "2", out)
+        diff_report(self.conn, PROFILE2, self.scoring, FakeEmbedder("fake"), "1", "2", None, out)
         text = out.getvalue()
         self.assertIn("claude scores in the store: version 1: 7, version 2: 6", text)
         self.assertIn("5 of 6 labeled jobs have both", text)
@@ -140,16 +141,51 @@ class DiffReportTest(unittest.TestCase):
         self.assertEqual(self.counts(), before)       # no embeddings cached, nothing else touched
         self.assertEqual(before["embeddings"], 0)
 
+    def test_labeled_after_restricts_the_labels(self) -> None:
+        out = io.StringIO()
+        since = datetime(2026, 10, 8, tzinfo=timezone.utc)      # NOW is 10-08 15:00; ~00..~02 were labeled 10-06
+        diff_report(self.conn, PROFILE2, self.scoring, FakeEmbedder("fake"), "1", "2", since, out)
+        text = out.getvalue()
+        self.assertIn("labels created on or after 2026-10-08 (UTC) only: 3 of 6", text)
+        self.assertIn("2 of 3 labeled jobs have both", text)        # ~03, ~04 (~06 lacks version B)
+        self.assertNotIn("Zero", text)                              # an old label's job is gone from the table
+        self.assertEqual(self.counts()["embeddings"], 0)
+
     def test_without_labels_it_still_runs(self) -> None:
         self.conn.execute("PRAGMA query_only = OFF")
         self.conn.execute("DELETE FROM labels")
         self.conn.execute("PRAGMA query_only = ON")
         out = io.StringIO()
-        diff_report(self.conn, PROFILE2, self.scoring, FakeEmbedder("fake"), "1", "2", out)
+        diff_report(self.conn, PROFILE2, self.scoring, FakeEmbedder("fake"), "1", "2", None, out)
         self.assertIn("nothing to compare", out.getvalue())
 
 
+class LabeledAfterTest(unittest.TestCase):
+    def test_parse_date(self) -> None:
+        self.assertEqual(parse_date("2026-10-22"), datetime(2026, 10, 22, tzinfo=timezone.utc))
+        for bad in ("22.10.2026", "2026-13-01", "2026-10", "tomorrow", ""):
+            with self.subTest(bad=bad), self.assertRaises(argparse.ArgumentTypeError):
+                parse_date(bad)
+
+    def test_eval_labels(self) -> None:
+        conn = open_store(Path(":memory:"), [], NOW)
+        save_label(conn, "~01", 1, datetime(2026, 10, 7, 9, 0, tzinfo=timezone.utc))
+        save_label(conn, "~02", -1, datetime(2026, 10, 9, 9, 0, tzinfo=timezone.utc))
+        out = io.StringIO()
+        self.assertEqual(eval_labels(conn, None, out), {"~01": 1, "~02": -1})
+        self.assertEqual(out.getvalue(), "")                        # no filter: no extra output
+        self.assertEqual(eval_labels(conn, datetime(2026, 10, 8, tzinfo=timezone.utc), out), {"~02": -1})
+        self.assertIn("2026-10-08 (UTC) only: 1 of 2", out.getvalue())
+        conn.close()
+
+
 class ArgumentsTest(unittest.TestCase):
+    def test_labeled_after_needs_eval_and_a_real_date(self) -> None:
+        for argv in (["--labeled-after", "2026-10-22"], ["--eval", "--labeled-after", "soon"]):
+            with self.subTest(argv=argv), mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit) as ctx:
+                main(argv)
+            self.assertEqual(ctx.exception.code, 2)
+
     def test_needs_eval_and_two_different_versions(self) -> None:
         for argv in (["--claude-diff", "1", "2"], ["--eval", "--claude-diff", "1", "1"], ["--eval", "--claude-diff", "1"]):
             with self.subTest(argv=argv), mock.patch("sys.stderr", io.StringIO()), self.assertRaises(SystemExit) as ctx:

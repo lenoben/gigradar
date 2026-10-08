@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from gigradar.score import Score
-from gigradar.store import (SCHEMA_VERSION, delete_scores, score_rows, StoreError, established_searches, filter_new, job_id, load_scores,
+from gigradar.store import (SCHEMA_VERSION, load_labels_since, save_label, delete_scores, score_rows, StoreError, established_searches, filter_new, job_id, load_scores,
                             mark_seen, open_existing, open_store, save_job_score, seen_count, stored_job)
 from upwork_search import Job
 
@@ -262,6 +262,18 @@ class DeleteScoresTest(unittest.TestCase):
         self.assertEqual(score_rows(self.conn, "claude", None), [])
         self.assertEqual(len(score_rows(self.conn, "embed", None)), 1)
         self.assertEqual(delete_scores(self.conn, "claude", None), 0)
+
+
+class LabelsSinceTest(unittest.TestCase):
+    def test_inclusive_by_timestamp(self) -> None:
+        conn = open_store(Path(":memory:"), [], NOW)
+        for jid, label, day in (("~01", 1, 6), ("~02", -1, 7), ("~03", 1, 8), ("~04", -1, 9)):
+            save_label(conn, jid, label, datetime(2026, 10, day, 0 if jid == "~03" else 12, 0, tzinfo=timezone.utc))
+        since = datetime(2026, 10, 8, tzinfo=timezone.utc)
+        self.assertEqual(load_labels_since(conn, since), {"~03": 1, "~04": -1})      # 10-08 00:00 is included
+        self.assertEqual(load_labels_since(conn, datetime(2026, 10, 10, tzinfo=timezone.utc)), {})
+        self.assertEqual(len(load_labels_since(conn, datetime(2026, 1, 1, tzinfo=timezone.utc))), 4)
+        conn.close()
 
 
 class OpenExistingTest(unittest.TestCase):
