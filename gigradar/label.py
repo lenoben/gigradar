@@ -94,6 +94,49 @@ def session(conn, jobs: Sequence[Job], scores: dict[str, Score] | None, my_skill
     return len(done)
 
 
+def diff_report(conn, profile, scoring, embedder, version_a: str, version_b: str, out: TextIO) -> None:
+    """--eval --claude-diff: two rubric versions' claude scores side by side on the labeled jobs, with the
+    embedding scores. Reads only: the connection is query_only and new embeddings stay in memory."""
+    from gigradar.evaluate import claude_diff, print_claude_diff
+    from gigradar.rubric import SCORER
+    from gigradar.score import ReadOnlyEmbeddingCache, scorer_from_config
+    from gigradar.store import SqliteEmbeddingCache, load_scores, stored_jobs
+
+    labels = load_labels(conn)
+    labeled = [j for j in stored_jobs(conn) if job_id(j) in labels]
+    scores = {v: load_scores(conn, SCORER, v) for v in (version_a, version_b)}
+    cache = ReadOnlyEmbeddingCache(SqliteEmbeddingCache(conn, datetime.now(timezone.utc)))  # put() is never reached
+    embedded = scorer_from_config(embedder, scoring, cache).score(labeled, profile) if labeled else []
+    embed = {job_id(j): s.value for j, s in zip(labeled, embedded, strict=True)}
+    print(f"claude scores in the store: version {version_a}: {len(scores[version_a])}, "
+          f"version {version_b}: {len(scores[version_b])}", file=out)
+    print_claude_diff(claude_diff(labeled, labels, embed, scores[version_a], scores[version_b], version_a, version_b),
+                      version_a, version_b, out)
+
+
+def run_diff(cfg, version_a: str, version_b: str) -> int:
+    """Opens the store without creating or migrating it, and read-only."""
+    from gigradar.embed import EmbedderError, FastEmbedder
+    from gigradar.store import StoreError, open_existing
+
+    try:
+        conn = open_existing(cfg.db_path, 30.0)
+    except StoreError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+    try:
+        conn.execute("PRAGMA query_only = ON")
+        try:
+            embedder = FastEmbedder(cfg.scoring.model, cfg.scoring.model_dir, offline=True)
+        except EmbedderError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            return 1
+        diff_report(conn, cfg.profile, cfg.scoring, embedder, version_a, version_b, sys.stdout)
+        return 0
+    finally:
+        conn.close()
+
+
 def main(argv: Sequence[str]) -> int:
     from gigradar.config import ConfigError, default_paths, load_config, load_dotenv
     from gigradar.embed import EmbedderError, FastEmbedder
@@ -108,9 +151,16 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--show-score", action="store_true", help="show the current score while labeling")
     parser.add_argument("--eval", action="store_true", help="compare scorer variants on the labels")
     parser.add_argument("--show-misses", action="store_true", help="with --eval: list the worst disagreements")
+    parser.add_argument("--claude-diff", nargs=2, metavar=("A", "B"),
+                        help="with --eval: compare claude scores of rubric versions A and B on the labeled jobs "
+                             "(read-only; prints this instead of the usual report)")
     parser.add_argument("--claude-version", default=RUBRIC_VERSION,
                         help="with --eval: which rubric version's claude scores to compare (default: the current one)")
     args = parser.parse_args(argv)
+    if args.claude_diff and not args.eval:
+        parser.error("--claude-diff needs --eval")
+    if args.claude_diff and args.claude_diff[0] == args.claude_diff[1]:
+        parser.error("--claude-diff needs two different versions")
 
     environ = dict(os.environ)
     try:
@@ -122,6 +172,8 @@ def main(argv: Sequence[str]) -> int:
     if cfg.profile is None:
         print("config: no [profile] table in gigradar.toml (and it needs profile.md)", file=sys.stderr)
         return 2
+    if args.claude_diff:
+        return run_diff(cfg, args.claude_diff[0], args.claude_diff[1])
     now = datetime.now(timezone.utc)
     conn = open_store(cfg.db_path, [s.name for s in cfg.searches], now)
     try:

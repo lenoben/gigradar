@@ -30,6 +30,8 @@ from upwork_search import Job
 MIN_PER_CLASS = 10
 BOOTSTRAP_ROUNDS = 1000
 SEED = 7                      # fixed: the same labels always give the same report
+DIFF_MIN = 15               # --claude-diff lists jobs whose two claude scores differ by at least this
+TITLE_CHARS = 60
 KEEP_GOOD = 0.95              # suggested min_score keeps at least this share of 👍 jobs
 CLEAR_GAIN = 0.05             # a variant must beat the current AUC by this much ...
 BM25_K1, BM25_B = 1.5, 0.75   # ... and its paired interval must exclude 0
@@ -48,6 +50,22 @@ def average_ranks(values: Sequence[float]) -> list[float]:
             ranks[order[k]] = (i + j) / 2 + 1
         i = j + 1
     return ranks
+
+
+def spearman(x: Sequence[float], y: Sequence[float]) -> float | None:
+    """Spearman rank correlation (Pearson on average ranks); None if undefined (fewer than 2 values,
+    or one side is constant)."""
+    if len(x) != len(y):
+        raise ValueError(f"{len(x)} values but {len(y)}")
+    if len(x) < 2:
+        return None
+    rx, ry = average_ranks(x), average_ranks(y)
+    mx, my = sum(rx) / len(rx), sum(ry) / len(ry)
+    sxx = sum((a - mx) ** 2 for a in rx)
+    syy = sum((b - my) ** 2 for b in ry)
+    if sxx == 0 or syy == 0:
+        return None
+    return sum((a - mx) * (b - my) for a, b in zip(rx, ry, strict=True)) / math.sqrt(sxx * syy)
 
 
 def auc(scores: Sequence[float], labels: Sequence[int]) -> float | None:
@@ -193,6 +211,83 @@ def combined_variant(base: Variant, other: Variant) -> Variant:
     """mean(base, other) per job: "do the two scorers complement each other?" (same jobs in both)."""
     scores = [(a + b) / 2 for a, b in zip(base.scores, other.scores, strict=True)]
     return Variant("combined: mean(embedding, claude)", scores, ["mean of embedding and claude"] * len(scores))
+
+
+@dataclass(frozen=True)
+class DiffRow:
+    label: int          # +1 / -1
+    score_a: int
+    score_b: int
+    embed: int          # the embedding scorer's score for the same job
+    title: str
+
+    @property
+    def diff(self) -> int:
+        return self.score_b - self.score_a
+
+
+@dataclass(frozen=True)
+class VersionSummary:
+    version: str
+    mean_good: float | None     # mean claude score of the 👍 jobs (None: no such job)
+    mean_bad: float | None
+    spearman: float | None      # with the embedding scores, over the same jobs
+
+
+@dataclass(frozen=True)
+class ClaudeDiff:
+    rows: list[DiffRow]             # |diff| >= DIFF_MIN, biggest first
+    summaries: list[VersionSummary]  # [version A, version B]
+    compared: int                   # labeled jobs with claude scores in both versions
+    labeled: int
+
+
+def claude_diff(jobs: Sequence[Job], labels: dict[str, int], embed: dict[str, int], a: dict[str, Score],
+                b: dict[str, Score], version_a: str, version_b: str) -> ClaudeDiff:
+    """Compare two rubric versions' claude scores on the labeled jobs that have both. `embed`: the
+    embedding scores by job id. The summaries use the same jobs as the table."""
+    labeled = [j for j in jobs if job_id(j) in labels]
+    common = [j for j in labeled if job_id(j) in a and job_id(j) in b]
+    rows = [DiffRow(labels[job_id(j)], a[job_id(j)].value, b[job_id(j)].value, embed[job_id(j)], j.title)
+            for j in common]
+    rows = sorted((r for r in rows if abs(r.diff) >= DIFF_MIN), key=lambda r: -abs(r.diff))
+
+    def summary(version: str, scores: dict[str, Score]) -> VersionSummary:
+        def mean(label: int) -> float | None:
+            values = [scores[job_id(j)].value for j in common if labels[job_id(j)] == label]
+            return sum(values) / len(values) if values else None
+
+        return VersionSummary(version, mean(1), mean(-1), spearman(
+            [scores[job_id(j)].value for j in common], [embed[job_id(j)] for j in common]))
+
+    return ClaudeDiff(rows, [summary(version_a, a), summary(version_b, b)], len(common), len(labeled))
+
+
+def print_claude_diff(result: ClaudeDiff, version_a: str, version_b: str, out: TextIO) -> None:
+    def say(line: str = "") -> None:
+        print(line, file=out)
+
+    say(f"CLAUDE SCORES, rubric version {version_a} vs {version_b}: {result.compared} of {result.labeled} "
+        "labeled jobs have both")
+    if not result.compared:
+        say("nothing to compare: no labeled job has claude scores in both versions")
+        return
+    say(f"\njobs whose scores differ by >= {DIFF_MIN} (biggest first), {len(result.rows)} of {result.compared}:")
+    if result.rows:
+        say(f"{'label':<5}  {'v' + version_a:>5}  {'v' + version_b:>5}  {'diff':>5}  {'embed':>5}  title")
+        for r in result.rows:
+            title = r.title if len(r.title) <= TITLE_CHARS else r.title[:TITLE_CHARS - 1] + "…"
+            say(f"{'👍' if r.label > 0 else '👎':<5}  {r.score_a:>5}  {r.score_b:>5}  {r.diff:>+5}  {r.embed:>5}  {title}")
+    else:
+        say("  (none)")
+    say()
+
+    def fmt(value: float | None, spec: str) -> str:
+        return "n/a" if value is None else format(value, spec)
+
+    for summary in result.summaries:
+        say(f"version {summary.version}: mean claude score 👍 {fmt(summary.mean_good, '.1f')}, "
+            f"👎 {fmt(summary.mean_bad, '.1f')}; Spearman with embedding {fmt(summary.spearman, '+.2f')}")
 
 
 def report(jobs: Sequence[Job], labels: Sequence[int], variants: Sequence[Variant], stored: int,
