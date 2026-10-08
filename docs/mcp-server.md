@@ -72,3 +72,9 @@ e.g. before re-scoring. It is a maintenance command, not an MCP tool, and it onl
 Changing the rubric bumps its version, and `--eval` compares the current version's scores. To compare an
 older run (say, scores made without the rubric) with a newer one without deleting anything, use
 `python -m gigradar.label --eval --claude-version 1`.
+
+To see *which* jobs two rubric versions disagree on, run `python -m gigradar.label --eval --claude-diff 1 2`.
+For the labeled jobs scored in both versions it lists those whose scores differ by 15 or more (label,
+both scores, difference, the embedding score, title), biggest difference first, then prints per version
+the mean Claude score of your 👍 and 👎 jobs and its Spearman correlation with the embedding scores.
+It is read-only: it never writes to the store, not even embeddings.
