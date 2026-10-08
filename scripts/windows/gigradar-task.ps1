@@ -67,11 +67,13 @@ switch ($PSCmdlet.ParameterSetName) {
         $task = Get-GigradarTask
         if (-not $task) { Write-Host "Scheduled task $TaskPath$TaskName is not registered."; return }
         $info = $task | Get-ScheduledTaskInfo
-        $meaning = @{ 0 = 'ok'; 1 = 'error (see log)'; 2 = 'config error'; 75 = 'stopped early, retried next run';
-                      267009 = 'running now'; 267011 = 'has not run yet' }
-        $code = [int]$info.LastTaskResult
+        # String keys: LastTaskResult is a UInt32 (crashes are 0xC0000005 = 3221225477), too big for [int].
+        $meaning = @{ '0' = 'ok'; '1' = 'error (see log)'; '2' = 'config error'; '75' = 'stopped early, retried next run';
+                      '267009' = 'running now'; '267011' = 'has not run yet';
+                      '3221225477' = 'CRASHED (access violation); see the Windows Application log' }
+        $code = [uint32]$info.LastTaskResult
         Write-Host "Task:        $TaskPath$TaskName ($($task.State))"
-        Write-Host "Last run:    $($info.LastRunTime)  result=$code ($($meaning[$code]))"
+        Write-Host "Last run:    $($info.LastRunTime)  result=$code (0x$($code.ToString('X'))) ($($meaning["$code"]))"
         Write-Host "Next run:    $($info.NextRunTime)"
         Write-Host "Log:         $LogFile"
         # The log is UTF-8; Windows PowerShell 5.1 would otherwise read it as the ANSI codepage.

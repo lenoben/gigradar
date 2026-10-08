@@ -34,6 +34,20 @@ class Embedder(Protocol):
     def embed(self, texts: Sequence[str]) -> list[Vector]: ...
 
 
+def preload_runtime() -> None:
+    """Import onnxruntime now, before anything else loads a C++ runtime.
+
+    windows-toasts' dependency `winrt` bundles an old MSVCP140.dll (14.29). If it is loaded before
+    onnxruntime, onnxruntime's native code ends up on that old copy and the process dies with an access
+    violation (0xC0000005) when the model loads. Whichever DLL loads first wins, so scoring runs call this
+    before the notifier (and so winrt) is built. Reproduced: `import windows_toasts` then
+    `import onnxruntime` crashes; the reverse order works."""
+    try:
+        import onnxruntime  # noqa: F401
+    except ImportError:
+        return  # fastembed not installed: FastEmbedder reports that when scoring actually needs it
+
+
 def normalize(vector: Sequence[float]) -> Vector:
     norm = math.sqrt(sum(x * x for x in vector))
     if norm == 0:
