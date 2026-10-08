@@ -9,6 +9,9 @@ A search's first run seeds silently: what only it found is marked seen, no notif
 blast (also for a search added later). Jobs are marked seen only after the notification
 went out, so a failed notification re-sends them next run.
 
+Crash detection (runstate.py): each run marks start/completion in run_state.json next to the store;
+a run that finds the previous one unfinished sends one warning (log + Telegram, toast if no Telegram).
+
 With [profile] in gigradar.toml, new jobs are scored before alerting (shadow mode: shown
 and sorted, never filtered); a scoring failure alerts them unscored ("Score n/a").
 """
@@ -27,8 +30,9 @@ from pathlib import Path
 
 from gigradar.config import Config, ConfigError, SearchSpec, default_paths, load_config, load_dotenv
 from gigradar.embed import preload_runtime
-from gigradar.notify import Alert, Notifier, build_notifier, score_text
+from gigradar.notify import Alert, Notifier, build_notifier, score_text, warning_notifier
 from gigradar.score import EmbeddingScorer, Score, scorer_from_config
+from gigradar.runstate import begin_run, end_run, pid_alive, state_path
 from gigradar.search import UPSTREAM_SEARCH, CurlSearcher, Searcher, SearchFn
 from gigradar.store import (SqliteEmbeddingCache, established_searches, filter_new, job_id, mark_seen, open_store,
                             record_searches, save_scores)
@@ -211,6 +215,15 @@ def main(argv: Sequence[str]) -> int:
         return EXIT_CONFIG
 
     now = datetime.now(timezone.utc)
+    marker = state_path(cfg.db_path)
+    state = begin_run(marker, warning_notifier(notifier), now, os.getpid(), pid_alive)
+    try:
+        return run_once(cfg, searcher, notifier, now)
+    finally:
+        end_run(marker, state)  # only a hard death (crash, kill, shutdown) skips this
+
+
+def run_once(cfg: Config, searcher: Searcher, notifier: Notifier, now: datetime) -> int:
     try:
         # adopt: on a v1 -> v2 migration, the configured searches count as established
         conn = open_store(cfg.db_path, [s.name for s in cfg.searches], now)
