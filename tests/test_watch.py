@@ -7,11 +7,12 @@ import tempfile
 import threading
 import time
 import unittest
+from unittest import mock
 from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
-from gigradar.config import load_config
+from gigradar.config import ConfigError, load_config
 from gigradar.embed import EmbedderError
 from gigradar.notify import Alert
 from gigradar.score import Score
@@ -218,6 +219,26 @@ class WatchTest(unittest.TestCase):
 
     def test_main_config_error_exit_code(self) -> None:
         self.assertEqual(main(["--config", str(self.dir / "missing.toml")]), EXIT_CONFIG)
+
+    def test_runtime_is_preloaded_before_the_notifier_when_scoring_is_on(self) -> None:
+        for with_profile, expected in ((True, ["preload", "notifier"]), (False, ["notifier"])):
+            order: list[str] = []
+
+            def fake_notifier(cfg):
+                order.append("notifier")
+                raise ConfigError("stop here")
+
+            toml = TOML + ('[profile]\nskills = ["Rust"]\n' if with_profile else "")
+            (self.dir / "gigradar.toml").write_text(toml, encoding="utf-8")
+            (self.dir / "profile.md").write_text("## Web\nNext.js apps\n", encoding="utf-8")
+            with self.subTest(with_profile=with_profile), \
+                    mock.patch("gigradar.watch.preload_runtime", lambda: order.append("preload")), \
+                    mock.patch("gigradar.watch.build_notifier", fake_notifier):
+                try:
+                    self.assertEqual(main(["--config", str(self.dir / "gigradar.toml")]), EXIT_CONFIG)
+                finally:
+                    reset_logging()
+                self.assertEqual(order, expected)
 
     def test_log_file_is_created_and_written(self) -> None:
         log_file = self.dir / "logs" / "gigradar.log"

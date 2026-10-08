@@ -26,6 +26,7 @@ from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from gigradar.config import Config, ConfigError, SearchSpec, default_paths, load_config, load_dotenv
+from gigradar.embed import preload_runtime
 from gigradar.notify import Alert, Notifier, build_notifier, score_text
 from gigradar.score import EmbeddingScorer, Score, scorer_from_config
 from gigradar.search import UPSTREAM_SEARCH, CurlSearcher, Searcher, SearchFn
@@ -201,6 +202,8 @@ def main(argv: Sequence[str]) -> int:
     try:
         load_dotenv(env_path, os.environ)
         cfg = load_config(args.config, os.environ)
+        if cfg.profile is not None:
+            preload_runtime()  # before build_notifier loads winrt: see its docstring
         notifier = build_notifier(cfg)
         searcher = build_searcher(cfg, notifier)
     except ConfigError as exc:
