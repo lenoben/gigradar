@@ -29,7 +29,7 @@ and `set_score` once per job. The rubric (`gigradar/rubric.py`) is generic; it r
 | `get_profile` | skill areas, skills, hard rules and `constraints` from your profile. Never any secret. |
 | `get_unscored_jobs(limit)` | newest-first jobs without a `claude` score for the current rubric version. Use limit 10; the cap is 20 (50 overflowed one tool result) |
 | `get_job(job_id, include_scores)` | one job, full description. `include_scores=true` also shows your label and every stored score: **inspection only** |
-| `set_score(job_id, value, reason)` | value 0–100, reason one line ≤ 200 characters |
+| `set_score(job_id, value, reason)` | `value` = your score, an integer 0–100; reason one line ≤ 200 characters |
 
 Scores are stored as scorer `claude`, version = the rubric version. **Changing the rubric text means
 bumping `RUBRIC_VERSION`** (a test pins both); old scores stay, and jobs are offered again for the new
