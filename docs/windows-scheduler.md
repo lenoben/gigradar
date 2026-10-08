@@ -58,3 +58,13 @@ Or trigger the registered task itself: `Start-ScheduledTask -TaskPath '\gigradar
 | 75 (0x4B) | stopped early: no token / blocked. Not retried; the next scheduled run tries again |
 | 2 | config error (`gigradar.toml` / `.env`) |
 | 1 | any other error, see the log |
+| 3221225477 (0xC0000005) | the process crashed (access violation); see the Windows Application log |
+
+## Crash detection
+
+A crash writes nothing to the log and sends no alert, so each run records its state in
+`run_state.json` next to the store (`data/` by default): "started" at the beginning, "completed" at
+the end (also for exit codes 75, 2 and 1). If a run finds the previous one started but never
+completed (crash, kill, shutdown mid-run), it sends **one** warning to the log and Telegram
+(toast only if Telegram isn't configured), then stays quiet until a run completes again.
+A crash before the notifier is built (imports, config) can't be reported this way.
