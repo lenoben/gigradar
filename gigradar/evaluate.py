@@ -183,6 +183,12 @@ def claude_variant(jobs: Sequence[Job], stored: dict[str, Score]) -> tuple[Varia
     return variant, f"claude: using {len(jobs)} stored scores"
 
 
+def combined_variant(base: Variant, other: Variant) -> Variant:
+    """mean(base, other) per job: "do the two scorers complement each other?" (same jobs in both)."""
+    scores = [(a + b) / 2 for a, b in zip(base.scores, other.scores, strict=True)]
+    return Variant("combined: mean(embedding, claude)", scores, ["mean of embedding and claude"] * len(scores))
+
+
 def report(jobs: Sequence[Job], labels: Sequence[int], variants: Sequence[Variant], stored: int,
            show_misses: bool, out: TextIO) -> None:
     good, bad = sum(label > 0 for label in labels), sum(label < 0 for label in labels)

@@ -97,7 +97,7 @@ def session(conn, jobs: Sequence[Job], scores: dict[str, Score] | None, my_skill
 def main(argv: Sequence[str]) -> int:
     from gigradar.config import ConfigError, default_paths, load_config, load_dotenv
     from gigradar.embed import EmbedderError, FastEmbedder
-    from gigradar.evaluate import build_variants, claude_variant, report
+    from gigradar.evaluate import build_variants, claude_variant, combined_variant, report
     from gigradar.rubric import RUBRIC_VERSION, SCORER
     from gigradar.score import scorer_from_config
     from gigradar.store import SqliteEmbeddingCache, load_scores, open_store, stored_jobs
@@ -108,6 +108,8 @@ def main(argv: Sequence[str]) -> int:
     parser.add_argument("--show-score", action="store_true", help="show the current score while labeling")
     parser.add_argument("--eval", action="store_true", help="compare scorer variants on the labels")
     parser.add_argument("--show-misses", action="store_true", help="with --eval: list the worst disagreements")
+    parser.add_argument("--claude-version", default=RUBRIC_VERSION,
+                        help="with --eval: which rubric version's claude scores to compare (default: the current one)")
     args = parser.parse_args(argv)
 
     environ = dict(os.environ)
@@ -139,9 +141,10 @@ def main(argv: Sequence[str]) -> int:
             values = [labels[job_id(j)] for j in labeled]
             variants = build_variants(labeled, cfg.profile, cfg.scoring, embedder, cache) if labeled else []
             if labeled:
-                extra, status = claude_variant(labeled, load_scores(conn, SCORER, RUBRIC_VERSION))
-                print(status)
-                variants += [extra] if extra else []
+                extra, status = claude_variant(labeled, load_scores(conn, SCORER, args.claude_version))
+                print(f"{status} (rubric version {args.claude_version})")
+                if extra:
+                    variants += [extra, combined_variant(variants[0], extra)]
             report(labeled, values, variants, len(jobs), args.show_misses, sys.stdout)
             return 0
         scores = None

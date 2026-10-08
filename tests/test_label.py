@@ -10,7 +10,7 @@ from pathlib import Path
 
 from gigradar.config import ConfigError, load_config
 from gigradar.evaluate import (MIN_PER_CLASS, Variant, auc, bm25, bootstrap_auc, bootstrap_diff, build_variants,
-                               claude_variant, precision_at, report, suggest_min_score, threshold_rows)
+                               claude_variant, combined_variant, precision_at, report, suggest_min_score, threshold_rows)
 from gigradar.label import mixed_order, render, session
 from gigradar.score import MemoryEmbeddingCache, Score
 from gigradar.store import delete_label, load_labels, mark_seen, open_store, save_label
@@ -256,6 +256,14 @@ class ClaudeRowTest(unittest.TestCase):
         variant, status = claude_variant(self.JOBS, {**stored, "~02": Score(50, "c", "claude", "1")})
         self.assertEqual((variant.name, variant.scores, variant.reasons),
                          ("claude (stored scores)", [90, 10, 50], ["a", "b", "c"]))
+
+
+class CombinedVariantTest(unittest.TestCase):
+    def test_mean_per_job(self) -> None:
+        combined = combined_variant(Variant("a", [10.0, 80.0], ["x", "y"]), Variant("b", [30.0, 90.0], ["x", "y"]))
+        self.assertEqual((combined.name, combined.scores), ("combined: mean(embedding, claude)", [20.0, 85.0]))
+        with self.assertRaises(ValueError):
+            combined_variant(Variant("a", [1.0], ["x"]), Variant("b", [1.0, 2.0], ["x", "y"]))
 
 
 if __name__ == "__main__":
