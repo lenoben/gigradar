@@ -108,6 +108,23 @@ def open_store(path: Path, adopt: Sequence[str], now: datetime) -> sqlite3.Conne
     return conn
 
 
+def open_existing(path: Path, busy_timeout: float) -> sqlite3.Connection:
+    """Open a store that is already at the current schema; never creates or migrates one
+    (the scheduled watcher owns that). Waits up to `busy_timeout` seconds for its write lock."""
+    if not path.is_file():
+        raise StoreError(f"no store at {path} (run the watcher once first)")
+    conn = sqlite3.connect(str(path), timeout=busy_timeout)
+    try:
+        version = _version(conn)
+        if version != SCHEMA_VERSION:
+            raise StoreError(f"store schema is v{version}, this code needs v{SCHEMA_VERSION} "
+                             "(run the watcher once to migrate it)")
+    except BaseException:
+        conn.close()
+        raise
+    return conn
+
+
 def backup(conn: sqlite3.Connection, path: Path, now: datetime) -> Path:
     """Copy the store next to itself (gigradar.db.v1-<UTC time>.bak) via SQLite's backup API."""
     target = path.with_name(f"{path.name}.v{_version(conn)}-{now:%Y%m%dT%H%M%SZ}.bak")
@@ -217,9 +234,31 @@ def save_scores(conn: sqlite3.Connection, jobs: Sequence[Job], scores: Sequence[
 
 def stored_jobs(conn: sqlite3.Connection) -> list[Job]:
     """Every job in the store, oldest first, rebuilt from its saved payload."""
-    names = {f.name for f in fields(Job)}
-    return [Job(**{k: v for k, v in json.loads(payload).items() if k in names})
+    return [job_from_payload(payload)
             for (payload,) in conn.execute("SELECT payload FROM seen_jobs ORDER BY first_seen, job_id")]
+
+
+def job_from_payload(payload: str) -> Job:
+    names = {f.name for f in fields(Job)}
+    return Job(**{k: v for k, v in json.loads(payload).items() if k in names})
+
+
+def stored_job(conn: sqlite3.Connection, jid: str) -> Job | None:
+    row = conn.execute("SELECT payload FROM seen_jobs WHERE job_id = ?", (jid,)).fetchone()
+    return None if row is None else job_from_payload(row[0])
+
+
+def save_job_score(conn: sqlite3.Connection, jid: str, score: Score, now: datetime) -> None:
+    """Store one score for a job id; the newest per (job, scorer, version) wins."""
+    with conn:
+        conn.execute("INSERT OR REPLACE INTO scores VALUES (?, ?, ?, ?, ?, ?)",
+                     (jid, score.scorer, score.version, score.value, score.reason, now.isoformat()))
+
+
+def load_scores(conn: sqlite3.Connection, scorer: str, version: str) -> dict[str, Score]:
+    """job id -> stored score of one scorer version."""
+    return {jid: Score(value, reason, scorer, version) for jid, value, reason in conn.execute(
+        "SELECT job_id, value, reason FROM scores WHERE scorer = ? AND version = ?", (scorer, version))}
 
 
 def save_label(conn: sqlite3.Connection, jid: str, label: int, now: datetime) -> None:

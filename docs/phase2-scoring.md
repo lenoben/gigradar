@@ -136,11 +136,10 @@ What this means for Phase 2 now:
 - The import command and the config loader stay usable as library functions (the wizard
   calls them; no logic only reachable via `argparse`).
 
-## Claude via MCP (Phase 3, not now)
+## Claude via MCP (Phase 3)
 
-Claude Code / a scheduled Claude task pulls unscored jobs, scores them, writes scores back
-(tools like `get_new_jobs`, `set_score`, `mark_seen`). Requirement for Phase 2: **scores live in
-SQLite** with a scorer name, so an MCP-written score is just another scorer.
+Built as an optional local MCP server; see [mcp-server.md](mcp-server.md). Scores live in SQLite
+with a scorer name, so Claude's scores are just another scorer ("claude").
 
 ## Design
 
