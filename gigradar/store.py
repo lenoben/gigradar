@@ -255,6 +255,25 @@ def save_job_score(conn: sqlite3.Connection, jid: str, score: Score, now: dateti
                      (jid, score.scorer, score.version, score.value, score.reason, now.isoformat()))
 
 
+def score_rows(conn: sqlite3.Connection, scorer: str, version: str | None) -> list[tuple]:
+    """One scorer's stored scores (all its versions when `version` is None) as
+    (job_id, scorer, version, value, reason, scored_at)."""
+    sql = "SELECT job_id, scorer, version, value, reason, scored_at FROM scores WHERE scorer = ?"
+    params: tuple = (scorer,)
+    if version is not None:
+        sql, params = sql + " AND version = ?", (scorer, version)
+    return conn.execute(sql + " ORDER BY job_id, version", params).fetchall()
+
+
+def delete_scores(conn: sqlite3.Connection, scorer: str, version: str | None) -> int:
+    """Delete one scorer's scores (all its versions when `version` is None); returns how many."""
+    sql, params = "DELETE FROM scores WHERE scorer = ?", (scorer,)
+    if version is not None:
+        sql, params = sql + " AND version = ?", (scorer, version)
+    with conn:
+        return conn.execute(sql, params).rowcount
+
+
 def load_scores(conn: sqlite3.Connection, scorer: str, version: str) -> dict[str, Score]:
     """job id -> stored score of one scorer version."""
     return {jid: Score(value, reason, scorer, version) for jid, value, reason in conn.execute(

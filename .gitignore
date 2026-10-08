@@ -8,6 +8,7 @@ __pycache__/
 CLAUDE.local.md
 gigradar.toml
 gigradar-*.toml
+claude-scores-backup-*.json
 profile.md
 profile_sources/
 data/
