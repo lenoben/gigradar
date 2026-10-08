@@ -1,5 +1,6 @@
 """Run: .venv/Scripts/python -m unittest discover -s tests   (stdlib only, no network)"""
 
+import contextlib
 import json
 import sqlite3
 import tempfile
@@ -7,8 +8,9 @@ import unittest
 from datetime import datetime, timezone
 from pathlib import Path
 
-from gigradar.store import (StoreError, established_searches, filter_new, job_id, mark_seen, open_store,
-                            seen_count)
+from gigradar.score import Score
+from gigradar.store import (SCHEMA_VERSION, StoreError, established_searches, filter_new, job_id, load_scores,
+                            mark_seen, open_existing, open_store, save_job_score, seen_count, stored_job)
 from upwork_search import Job
 
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
@@ -208,6 +210,59 @@ class MigrationTest(unittest.TestCase):
         finally:
             conn.close()
         self.assertEqual(len(self.backups()), 1)
+
+
+class JobScoreHelpersTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.conn = open_store(Path(":memory:"), [], NOW)
+        mark_seen(self.conn, [make_job("~01")], NOW)
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def test_stored_job(self) -> None:
+        self.assertEqual(stored_job(self.conn, "~01").title, "job ~01")
+        self.assertIsNone(stored_job(self.conn, "~nope"))
+
+    def test_save_and_load_scores_per_scorer_and_version(self) -> None:
+        save_job_score(self.conn, "~01", Score(40, "a", "claude", "1"), NOW)
+        save_job_score(self.conn, "~01", Score(90, "b", "claude", "1"), NOW)   # same key: newest wins
+        save_job_score(self.conn, "~01", Score(10, "old", "claude", "0"), NOW)
+        save_job_score(self.conn, "~01", Score(70, "e", "embed", "2"), NOW)
+        self.assertEqual(load_scores(self.conn, "claude", "1"), {"~01": Score(90, "b", "claude", "1")})
+        self.assertEqual(load_scores(self.conn, "claude", "0"), {"~01": Score(10, "old", "claude", "0")})
+        self.assertEqual(load_scores(self.conn, "embed", "2"), {"~01": Score(70, "e", "embed", "2")})
+        self.assertEqual(load_scores(self.conn, "claude", "9"), {})
+
+
+class OpenExistingTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self.dir = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        self._tmp.cleanup()
+
+    def test_opens_a_current_store(self) -> None:
+        open_store(self.dir / "ok.db", [], NOW).close()
+        conn = open_existing(self.dir / "ok.db", 1.0)
+        self.assertEqual(seen_count(conn), 0)
+        conn.close()
+
+    def test_never_creates_or_migrates(self) -> None:
+        missing = self.dir / "missing.db"
+        with self.assertRaises(StoreError):
+            open_existing(missing, 1.0)
+        self.assertFalse(missing.exists())
+        old = self.dir / "old.db"
+        with contextlib.closing(sqlite3.connect(old)) as raw:
+            raw.execute("CREATE TABLE seen_jobs (job_id TEXT)")
+            raw.execute("PRAGMA user_version = 1")
+        with self.assertRaises(StoreError):
+            open_existing(old, 1.0)
+        with contextlib.closing(sqlite3.connect(old)) as raw:
+            self.assertEqual(raw.execute("PRAGMA user_version").fetchone()[0], 1)   # untouched
+        self.assertEqual(SCHEMA_VERSION, 2)
 
 
 if __name__ == "__main__":
