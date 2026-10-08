@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from gigradar.score import Score
-from gigradar.store import (SCHEMA_VERSION, StoreError, established_searches, filter_new, job_id, load_scores,
+from gigradar.store import (SCHEMA_VERSION, delete_scores, score_rows, StoreError, established_searches, filter_new, job_id, load_scores,
                             mark_seen, open_existing, open_store, save_job_score, seen_count, stored_job)
 from upwork_search import Job
 
@@ -233,6 +233,35 @@ class JobScoreHelpersTest(unittest.TestCase):
         self.assertEqual(load_scores(self.conn, "claude", "0"), {"~01": Score(10, "old", "claude", "0")})
         self.assertEqual(load_scores(self.conn, "embed", "2"), {"~01": Score(70, "e", "embed", "2")})
         self.assertEqual(load_scores(self.conn, "claude", "9"), {})
+
+
+class DeleteScoresTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self.conn = open_store(Path(":memory:"), [], NOW)
+        mark_seen(self.conn, [make_job("~01"), make_job("~02")], NOW)
+        for jid, scorer, version, value in (("~01", "claude", "1", 10), ("~02", "claude", "1", 20),
+                                            ("~02", "claude", "2", 30), ("~01", "embed", "2", 40)):
+            save_job_score(self.conn, jid, Score(value, "r", scorer, version), NOW)
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def test_score_rows_per_scorer_and_version(self) -> None:
+        self.assertEqual([(r[0], r[2], r[3]) for r in score_rows(self.conn, "claude", None)],
+                         [("~01", "1", 10), ("~02", "1", 20), ("~02", "2", 30)])
+        self.assertEqual([r[0] for r in score_rows(self.conn, "claude", "2")], ["~02"])
+        self.assertEqual(score_rows(self.conn, "claude", "9"), [])
+
+    def test_delete_one_version_only(self) -> None:
+        self.assertEqual(delete_scores(self.conn, "claude", "1"), 2)
+        self.assertEqual(len(score_rows(self.conn, "claude", None)), 1)
+        self.assertEqual(len(score_rows(self.conn, "embed", None)), 1)
+
+    def test_delete_all_versions_of_one_scorer_leaves_the_others(self) -> None:
+        self.assertEqual(delete_scores(self.conn, "claude", None), 3)
+        self.assertEqual(score_rows(self.conn, "claude", None), [])
+        self.assertEqual(len(score_rows(self.conn, "embed", None)), 1)
+        self.assertEqual(delete_scores(self.conn, "claude", None), 0)
 
 
 class OpenExistingTest(unittest.TestCase):

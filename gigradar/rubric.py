@@ -10,7 +10,7 @@ version (a test pins both together), so scores from different rubrics are never 
 from __future__ import annotations
 
 SCORER = "claude"  # the scorer name of every score written through the MCP server
-RUBRIC_VERSION = "1"
+RUBRIC_VERSION = "2"  # 2: batches of 10 (50 overflowed a tool result)
 
 RUBRIC = """\
 You are scoring freelance job postings (Upwork) against ONE freelancer's profile, so a ranked
@@ -20,7 +20,8 @@ good the job is in general.
 ## Procedure
 1. Call `get_profile` once. It returns the freelancer's skill areas, skills, hard rules
    (minimum rates, allowed tiers, excluded keywords).
-2. Call `get_unscored_jobs` (limit 20). For every job it returns, call `set_score` exactly once.
+2. Call `get_unscored_jobs` with limit 10 (larger batches overflow the tool result). For every job it
+   returns, call `set_score` exactly once.
 3. Repeat step 2 until `get_unscored_jobs` returns no jobs. Then report how many jobs you scored.
 
 ## Blind scoring (important)
