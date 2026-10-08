@@ -170,6 +170,23 @@ class MemoryEmbeddingCache:
         self.vectors.update({(jid, model): vec for jid, vec in vectors.items()})
 
 
+class ReadOnlyEmbeddingCache:
+    """Reads vectors from `inner` (e.g. the store's cache) but keeps new ones in memory only:
+    for read-only commands that must not write to the store, whatever is missing from it."""
+
+    def __init__(self, inner: EmbeddingCache) -> None:
+        self.inner = inner
+        self.fresh = MemoryEmbeddingCache()
+
+    def get(self, job_ids: Sequence[str], model: str) -> dict[str, Vector]:
+        found = self.inner.get(job_ids, model)
+        found.update(self.fresh.get([jid for jid in job_ids if jid not in found], model))
+        return found
+
+    def put(self, vectors: dict[str, Vector], model: str) -> None:
+        self.fresh.put(vectors, model)
+
+
 @dataclass(frozen=True)
 class EmbedResult:
     score: Score

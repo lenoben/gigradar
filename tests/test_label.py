@@ -9,10 +9,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from gigradar.config import ConfigError, load_config
-from gigradar.evaluate import (MIN_PER_CLASS, Variant, auc, bm25, bootstrap_auc, bootstrap_diff, build_variants,
+from gigradar.evaluate import (MIN_PER_CLASS, Variant, auc, average_ranks, bm25, bootstrap_auc, bootstrap_diff, build_variants,
                                claude_variant, combined_variant, precision_at, report, suggest_min_score, threshold_rows)
 from gigradar.label import mixed_order, render, session
-from gigradar.score import MemoryEmbeddingCache, Score
+from gigradar.score import MemoryEmbeddingCache, ReadOnlyEmbeddingCache, Score
 from gigradar.store import delete_label, load_labels, mark_seen, open_store, save_label
 from test_embed_score import PROFILE2, FakeEmbedder
 from test_score import make_job
@@ -264,6 +264,27 @@ class CombinedVariantTest(unittest.TestCase):
         self.assertEqual((combined.name, combined.scores), ("combined: mean(embedding, claude)", [20.0, 85.0]))
         with self.assertRaises(ValueError):
             combined_variant(Variant("a", [1.0], ["x"]), Variant("b", [1.0, 2.0], ["x", "y"]))
+
+
+class RankHelperTest(unittest.TestCase):
+    def test_average_ranks_share_ties(self) -> None:
+        self.assertEqual(average_ranks([30, 10, 20, 20]), [4.0, 1.0, 2.5, 2.5])
+        self.assertEqual(average_ranks([]), [])
+
+    def test_auc_is_unchanged_by_the_extraction(self) -> None:
+        self.assertEqual(auc([1, 2, 3, 4], [-1, -1, 1, 1]), 1.0)
+        self.assertEqual(auc([1, 1, 1, 1], [-1, -1, 1, 1]), 0.5)   # all tied: coin toss
+        self.assertEqual(auc([4, 3, 2, 1], [-1, -1, 1, 1]), 0.0)
+
+
+class ReadOnlyCacheTest(unittest.TestCase):
+    def test_new_vectors_stay_in_memory(self) -> None:
+        inner = MemoryEmbeddingCache()
+        inner.put({"~a": [1.0]}, "m")
+        cache = ReadOnlyEmbeddingCache(inner)
+        cache.put({"~b": [2.0]}, "m")
+        self.assertEqual(cache.get(["~a", "~b", "~c"], "m"), {"~a": [1.0], "~b": [2.0]})
+        self.assertEqual(inner.get(["~b"], "m"), {})   # nothing reached the real cache
 
 
 if __name__ == "__main__":

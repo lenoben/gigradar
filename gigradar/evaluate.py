@@ -35,6 +35,21 @@ CLEAR_GAIN = 0.05             # a variant must beat the current AUC by this much
 BM25_K1, BM25_B = 1.5, 0.75   # ... and its paired interval must exclude 0
 
 
+def average_ranks(values: Sequence[float]) -> list[float]:
+    """1-based ranks, ties share the average rank of their group."""
+    order = sorted(range(len(values)), key=values.__getitem__)
+    ranks = [0.0] * len(values)
+    i = 0
+    while i < len(order):
+        j = i
+        while j + 1 < len(order) and values[order[j + 1]] == values[order[i]]:
+            j += 1
+        for k in range(i, j + 1):
+            ranks[order[k]] = (i + j) / 2 + 1
+        i = j + 1
+    return ranks
+
+
 def auc(scores: Sequence[float], labels: Sequence[int]) -> float | None:
     """Mann-Whitney AUC with ties counted half (via average ranks, O(n log n));
     None if a class is missing."""
@@ -42,16 +57,7 @@ def auc(scores: Sequence[float], labels: Sequence[int]) -> float | None:
     n_neg = len(labels) - n_pos
     if not n_pos or not n_neg:
         return None
-    order = sorted(range(len(scores)), key=scores.__getitem__)
-    ranks = [0.0] * len(scores)
-    i = 0
-    while i < len(order):
-        j = i
-        while j + 1 < len(order) and scores[order[j + 1]] == scores[order[i]]:
-            j += 1
-        for k in range(i, j + 1):
-            ranks[order[k]] = (i + j) / 2 + 1  # average rank of the tie group (1-based)
-        i = j + 1
+    ranks = average_ranks(scores)
     rank_sum = sum(r for r, label in zip(ranks, labels, strict=True) if label > 0)
     return (rank_sum - n_pos * (n_pos + 1) / 2) / (n_pos * n_neg)
 
