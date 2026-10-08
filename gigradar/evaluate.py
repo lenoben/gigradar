@@ -23,7 +23,8 @@ from typing import TextIO
 from gigradar.config import ScoringConfig
 from gigradar.embed import Embedder
 from gigradar.profile import Profile
-from gigradar.score import EmbeddingCache, RuleScorer, job_text, scorer_from_config
+from gigradar.score import EmbeddingCache, RuleScorer, Score, job_text, scorer_from_config
+from gigradar.store import job_id
 from upwork_search import Job
 
 MIN_PER_CLASS = 10
@@ -165,6 +166,21 @@ def build_variants(jobs: Sequence[Job], profile: Profile, current: ScoringConfig
     keyword = bm25([job_text(j) for j in jobs], query, BM25_K1, BM25_B)
     variants.append(Variant("BM25 keywords (baseline)", keyword, ["keyword match"] * len(jobs)))
     return variants
+
+
+def claude_variant(jobs: Sequence[Job], stored: dict[str, Score]) -> tuple[Variant | None, str]:
+    """The "claude" row: Claude's stored scores (MCP server) for the labeled `jobs`. Returned only
+    when every labeled job has one, so its AUC is on the same jobs as the other rows; otherwise
+    None and a one-line status explaining why."""
+    have = [job_id(j) in stored for j in jobs]
+    if not any(have):
+        return None, "claude: no stored scores yet (score the jobs through the MCP server first)"
+    if not all(have):
+        return None, (f"claude: scored {sum(have)} of {len(jobs)} labeled jobs; the row appears "
+                      "once all are scored (a partial row would compare different jobs)")
+    scores = [stored[job_id(j)] for j in jobs]
+    variant = Variant("claude (stored scores)", [s.value for s in scores], [s.reason for s in scores])
+    return variant, f"claude: using {len(jobs)} stored scores"
 
 
 def report(jobs: Sequence[Job], labels: Sequence[int], variants: Sequence[Variant], stored: int,

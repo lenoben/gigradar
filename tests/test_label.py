@@ -10,7 +10,7 @@ from pathlib import Path
 
 from gigradar.config import ConfigError, load_config
 from gigradar.evaluate import (MIN_PER_CLASS, Variant, auc, bm25, bootstrap_auc, bootstrap_diff, build_variants,
-                               precision_at, report, suggest_min_score, threshold_rows)
+                               claude_variant, precision_at, report, suggest_min_score, threshold_rows)
 from gigradar.label import mixed_order, render, session
 from gigradar.score import MemoryEmbeddingCache, Score
 from gigradar.store import delete_label, load_labels, mark_seen, open_store, save_label
@@ -240,6 +240,22 @@ class ScoringKeysTest(unittest.TestCase):
             with self.subTest(fragment=fragment), self.assertRaises(ConfigError) as ctx:
                 self.load(toml)
             self.assertIn(fragment, str(ctx.exception))
+
+
+class ClaudeRowTest(unittest.TestCase):
+    JOBS = jobs(3)
+
+    def test_row_needs_every_labeled_job_scored(self) -> None:
+        stored = {"~00": Score(90, "a", "claude", "1"), "~01": Score(10, "b", "claude", "1")}
+        variant, status = claude_variant(self.JOBS, stored)
+        self.assertIsNone(variant)
+        self.assertIn("2 of 3", status)
+        variant, status = claude_variant(self.JOBS, {})
+        self.assertIsNone(variant)
+        self.assertIn("no stored scores", status)
+        variant, status = claude_variant(self.JOBS, {**stored, "~02": Score(50, "c", "claude", "1")})
+        self.assertEqual((variant.name, variant.scores, variant.reasons),
+                         ("claude (stored scores)", [90, 10, 50], ["a", "b", "c"]))
 
 
 if __name__ == "__main__":

@@ -97,9 +97,10 @@ def session(conn, jobs: Sequence[Job], scores: dict[str, Score] | None, my_skill
 def main(argv: Sequence[str]) -> int:
     from gigradar.config import ConfigError, default_paths, load_config, load_dotenv
     from gigradar.embed import EmbedderError, FastEmbedder
-    from gigradar.evaluate import build_variants, report
+    from gigradar.evaluate import build_variants, claude_variant, report
+    from gigradar.rubric import RUBRIC_VERSION, SCORER
     from gigradar.score import scorer_from_config
-    from gigradar.store import SqliteEmbeddingCache, open_store, stored_jobs
+    from gigradar.store import SqliteEmbeddingCache, load_scores, open_store, stored_jobs
 
     parser = argparse.ArgumentParser(prog="python -m gigradar.label", description=__doc__.split("\n")[0])
     parser.add_argument("--config", type=Path, default=default_paths()[0], help="gigradar.toml path")
@@ -137,6 +138,10 @@ def main(argv: Sequence[str]) -> int:
             labeled = [j for j in jobs if job_id(j) in labels]
             values = [labels[job_id(j)] for j in labeled]
             variants = build_variants(labeled, cfg.profile, cfg.scoring, embedder, cache) if labeled else []
+            if labeled:
+                extra, status = claude_variant(labeled, load_scores(conn, SCORER, RUBRIC_VERSION))
+                print(status)
+                variants += [extra] if extra else []
             report(labeled, values, variants, len(jobs), args.show_misses, sys.stdout)
             return 0
         scores = None
