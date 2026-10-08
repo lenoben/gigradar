@@ -127,3 +127,13 @@ def build_notifier(cfg: Config) -> Notifier:
                 raise ConfigError("notify channel 'telegram' needs TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in .env")
             notifiers.append(TelegramNotifier(cfg.telegram_bot_token, cfg.telegram_chat_id, urllib_post))
     return MultiNotifier(notifiers)
+
+
+def warning_notifier(notifier: Notifier) -> Notifier:
+    """Where a crash warning goes: the log plus Telegram. Toast only when Telegram isn't configured
+    (the warning matters most when nobody is at the PC, and toasts only reach the screen)."""
+    from gigradar.telegram import TelegramNotifier  # telegram imports this module
+
+    parts = notifier.notifiers if isinstance(notifier, MultiNotifier) else [notifier]
+    chosen = [n for n in parts if isinstance(n, TelegramNotifier)] or [n for n in parts if isinstance(n, ToastNotifier)]
+    return MultiNotifier([n for n in parts if isinstance(n, LogNotifier)] + chosen)
