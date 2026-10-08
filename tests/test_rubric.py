@@ -8,7 +8,7 @@ from gigradar.rubric import RUBRIC, RUBRIC_VERSION, SCORER
 
 # The rubric text and its version are pinned together: editing the text fails this test until the
 # version is bumped and the hash below is updated, so "claude" scores of different rubrics never mix.
-PINNED_RUBRIC = ("2", "abb1c65ae63b19b98efb39d842e8f570a9bc5d110d9b558c32baafa67ddc4dd0")
+PINNED_RUBRIC = ("3", "3c8c4abc6b1ddafdacb191177625fc65ed69de0c52508fe567cfe528e32c223d")
 
 
 class RubricTest(unittest.TestCase):
@@ -20,6 +20,39 @@ class RubricTest(unittest.TestCase):
     def test_rubric_is_generic(self) -> None:
         for personal in (":/", "Telegram", "@"):  # no paths, no channels, no addresses
             self.assertNotIn(personal, RUBRIC)
+
+    def test_v3_principles_are_stated_generally(self) -> None:
+        text = RUBRIC.lower()
+        for phrase in ("seniority is not a penalty", "at most 10", "`constraints`", "impersonate", "upfront",
+                       "terms of service"):
+            self.assertIn(phrase, text)
+        for personal in ("german", "europe", "utc", "pst"):   # no home country or time zone baked in
+            self.assertNotIn(personal, text)
+
+    # The rubric is a prompt: these tests check that each pay case is stated, not what a model does with it.
+    def test_stated_amount_clearly_below_the_minimum_is_a_hard_rule(self) -> None:
+        text = " ".join(RUBRIC.split()).lower()
+        for phrase in ("only when the posting states a concrete rate or budget",
+                       "clearly below the matching minimum", "`min_hourly_usd` for hourly jobs",
+                       "`min_fixed_usd` for fixed-price jobs", "a null minimum is no rule", "score 0-9"):
+            self.assertIn(phrase, text)
+
+    def test_missing_or_vague_budget_is_only_a_note(self) -> None:
+        text = " ".join(RUBRIC.split()).lower()
+        for phrase in ("a missing or vague budget", '"negotiable"', "mentioned in the reason",
+                       "do not lower the score"):
+            self.assertIn(phrase, text)
+
+    def test_implausible_budget_is_only_a_note(self) -> None:
+        text = " ".join(RUBRIC.split()).lower()
+        for phrase in ("an implausible one (only an obvious placeholder such as 0 or 1)", "a note, not a penalty"):
+            self.assertIn(phrase, text)
+
+    def test_small_but_possible_amount_is_a_stated_budget(self) -> None:
+        text = " ".join(RUBRIC.split()).lower()
+        for phrase in ("a small but possible amount (for example $5 or $10 fixed) counts as a stated budget",
+                       "not as an implausible one"):
+            self.assertIn(phrase, text)
 
     def test_batches_are_small_enough_for_one_tool_result(self) -> None:
         self.assertIn("limit 10", RUBRIC)
