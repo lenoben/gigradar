@@ -17,15 +17,17 @@ The server needs `gigradar.toml` with a `[profile]` and an existing store (run t
 
 ## Scoring
 
-In a Claude session, run the `score_jobs` prompt (in Claude Code: `/mcp__gigradar__score_jobs`) or
-just say "score my unscored jobs". Claude calls `get_profile`, then `get_unscored_jobs` in batches,
+In a Claude session, **start with the slash command `/mcp__gigradar__score_jobs`** (Claude Code).
+Do not ask in plain language: Claude Code only loads an MCP prompt through its slash command, so
+a plain request scores jobs *without the rubric* while storing them under the rubric version.
+Claude then calls `get_profile`, then `get_unscored_jobs` in batches,
 and `set_score` once per job. The rubric (`gigradar/rubric.py`) is generic; it reads your profile via
 `get_profile`.
 
 | Tool | Does |
 |---|---|
 | `get_profile` | skill areas, skills, hard rules from your profile. Never any secret. |
-| `get_unscored_jobs(limit)` | newest-first jobs without a `claude` score for the current rubric version (max 50) |
+| `get_unscored_jobs(limit)` | newest-first jobs without a `claude` score for the current rubric version. Use limit 10; the cap is 20 (50 overflowed one tool result) |
 | `get_job(job_id, include_scores)` | one job, full description. `include_scores=true` also shows your label and every stored score: **inspection only** |
 | `set_score(job_id, value, reason)` | value 0–100, reason one line ≤ 200 characters |
 
@@ -58,3 +60,15 @@ labeled job has a Claude score (a partial row would compare different jobs).
 
 Claude Code and Claude Desktop on the same machine. Desktop *local* scheduled tasks can too (they run
 on your machine while the app is open); cloud routines cannot reach a local stdio server.
+
+## Resetting Claude's scores
+
+`python -m gigradar.scores_reset [--version V] [--yes]` deletes the `claude` scores (all versions, or one),
+e.g. before re-scoring. It is a maintenance command, not an MCP tool, and it only ever touches scorer
+`claude`: never the embedding scores or your labels. Before deleting it writes the rows to
+`claude-scores-backup-<time>.json` next to the store, and without `--yes` it asks first.
+`--eval` also adds a "combined: mean(embedding, claude)" row once every labeled job has both scores.
+
+Changing the rubric bumps its version, and `--eval` compares the current version's scores. To compare an
+older run (say, scores made without the rubric) with a newer one without deleting anything, use
+`python -m gigradar.label --eval --claude-version 1`.
