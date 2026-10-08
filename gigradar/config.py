@@ -29,7 +29,7 @@ _CHOICES = {
     "job_type": JOB_TYPES, "tier": tuple(TIERS), "workload": WORKLOADS,
     "duration": DURATIONS, "client_hires": CLIENT_HIRES,
 }
-_PROFILE_KEYS = {"path", "skills", "min_hourly", "min_fixed", "tiers", "exclude_keywords"}
+_PROFILE_KEYS = {"path", "skills", "min_hourly", "min_fixed", "tiers", "exclude_keywords", "constraints"}
 _SCORING_KEYS = {"model", "model_dir", "weights", "cos_low", "cos_high", "skill_saturation",
                  "zero_skill_match", "max_words", "min_score"}
 ZERO_SKILL_MATCH = ("zero", "unknown")
@@ -257,6 +257,7 @@ def _profile(table: object, base: Path) -> Profile:
         min_fixed=_amount(table, "min_fixed"),
         tiers=tiers,
         exclude_keywords=_str_list(table, "exclude_keywords"),
+        constraints=_get(table, "constraints", str, None, "profile") or None,
     )
 
 

@@ -47,6 +47,10 @@ use_proxy = false
 # min_fixed = 1000        # USD; fixed jobs whose budget is below this
 # tiers = ["intermediate", "expert"]   # allowed tiers; omit or [] = any
 # exclude_keywords = ["WordPress", "unpaid test"]   # in title or skills (not the description)
+# # Free text about where/when/how you can work (location, time zone, on-site, languages). Only
+# # Claude's scoring rubric reads it (via the MCP server); a job that needs what you cannot offer
+# # scores at most 10 there. Personal: keep it in this gitignored file.
+# constraints = "e.g. Remote only; based in <country> (<time zone>); no on-site work"
 
 # Scoring settings (all optional; shown with their defaults). Needs: pip install -r requirements-scoring.txt
 # and the model downloaded once: python -m gigradar.embed --download

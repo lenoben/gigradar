@@ -65,6 +65,7 @@ def profile_view(profile: Profile) -> dict:
             "allowed_tiers": list(profile.tiers) or "any",
             "excluded_keywords_in_title_or_skills": list(profile.exclude_keywords),
         },
+        "constraints": profile.constraints,
     }
 
 
