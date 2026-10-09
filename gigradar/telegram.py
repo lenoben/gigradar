@@ -200,7 +200,7 @@ class TelegramNotifier:
         return text.replace(self._token, "<bot-token>") if self._token else text
 
 
-def _sample_alert() -> Alert:
+def sample_alert() -> Alert:
     job = Job(
         title="gigradar test: Senior Python & <Next.js> engineer for AI tooling",
         url="https://www.upwork.com/jobs/~0123456789abcdef",
@@ -228,7 +228,7 @@ def main(argv: list[str]) -> int:
         print("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in .env", file=sys.stderr)
         return 2
     try:
-        TelegramNotifier(token, chat_id, urllib_post).notify_jobs([_sample_alert()])
+        TelegramNotifier(token, chat_id, urllib_post).notify_jobs([sample_alert()])
     except TelegramError as exc:
         print(f"Telegram test FAILED: {exc}", file=sys.stderr)
         return 1

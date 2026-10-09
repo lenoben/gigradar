@@ -8,7 +8,7 @@ import urllib.parse
 from gigradar.notify import SCORE_CHARS, Alert
 from gigradar.score import Score
 from gigradar.telegram import (DIGEST_THRESHOLD, MAX_CHARS, SEND_PAUSE_S, TelegramError, TelegramNotifier,
-                               _sample_alert, format_brief, format_digest, pay_line)
+                               sample_alert, format_brief, format_digest, pay_line)
 from upwork_search import Job
 
 TOKEN = "123456:SECRET-token_value"
@@ -130,8 +130,8 @@ class FormatTest(unittest.TestCase):
         self.assertTrue(lines[3].startswith('• n/a <a href="https://www.upwork.com/jobs/~3">'))
         self.assertTrue(balanced(message))
 
-    def test_sample_alert_formats(self) -> None:
-        text = format_brief(_sample_alert())
+    def testsample_alert_formats(self) -> None:
+        text = format_brief(sample_alert())
         self.assertIn("<b>82</b> · Sample section · matched: Python, Next.js &amp; &lt;PostgreSQL&gt;", text)
         self.assertTrue(balanced(text))
 

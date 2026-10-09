@@ -21,7 +21,7 @@ import sqlite3
 import sys
 from array import array
 from collections.abc import Sequence
-from dataclasses import asdict, fields
+from dataclasses import asdict, dataclass, fields
 from datetime import datetime
 from pathlib import Path
 
@@ -241,6 +241,27 @@ def stored_jobs(conn: sqlite3.Connection) -> list[Job]:
 def job_from_payload(payload: str) -> Job:
     names = {f.name for f in fields(Job)}
     return Job(**{k: v for k, v in json.loads(payload).items() if k in names})
+
+
+@dataclass(frozen=True)
+class RecentJob:
+    job_id: str
+    first_seen: str
+    job: Job
+    score: int | None       # the embedding scorer's newest score, if the job was scored
+    reason: str | None
+    label: int | None       # +1 / -1, or None
+
+
+def recent_jobs(conn: sqlite3.Connection, limit: int) -> list[RecentJob]:
+    """The `limit` most recently seen jobs (newest first) with their embedding score and label."""
+    newest = "SELECT {} FROM scores c WHERE c.job_id = s.job_id AND c.scorer = 'embed' ORDER BY c.scored_at DESC LIMIT 1"
+    rows = conn.execute(
+        f"SELECT s.job_id, s.first_seen, s.payload, ({newest.format('c.value')}), ({newest.format('c.reason')}), "
+        "(SELECT l.label FROM labels l WHERE l.job_id = s.job_id) "
+        "FROM seen_jobs s ORDER BY s.first_seen DESC, s.job_id LIMIT ?", (limit,)).fetchall()
+    return [RecentJob(jid, seen, job_from_payload(payload), score, reason, label)
+            for jid, seen, payload, score, reason, label in rows]
 
 
 def stored_job(conn: sqlite3.Connection, jid: str) -> Job | None:

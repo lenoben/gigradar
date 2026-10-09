@@ -171,7 +171,7 @@ def run_watch(cfg: Config, searcher: Searcher, notifier: Notifier, conn, now: da
 def build_searcher(cfg: Config, notifier: Notifier) -> Searcher:
     if cfg.backend == "webview":
         from gigradar.webview_search import WebViewSearcher  # optional pywebview dependency
-        return WebViewSearcher(cfg.webview_profile, notifier, len(cfg.searches))
+        return WebViewSearcher(cfg.webview_profile, notifier, len(cfg.searches), visible=False)
     return CurlSearcher(build_provider(cfg.token_sources, cfg.proxy), cfg.proxy, UPSTREAM_SEARCH)
 
 
@@ -194,7 +194,7 @@ def setup_logging(log_file: Path | None) -> None:
 
 
 def main(argv: Sequence[str]) -> int:
-    default_toml, env_path = default_paths()
+    default_toml, _ = default_paths()
     parser = argparse.ArgumentParser(prog="python -m gigradar.watch", description=__doc__.split("\n")[0])
     parser.add_argument("--config", type=Path, default=default_toml, help="gigradar.toml path")
     parser.add_argument("--log-file", type=Path, default=None,
@@ -204,7 +204,7 @@ def main(argv: Sequence[str]) -> int:
     log.info("run start")  # vs. Task Scheduler's start time: shows interpreter startup lag
 
     try:
-        load_dotenv(env_path, os.environ)
+        load_dotenv(args.config.parent / ".env", os.environ)  # secrets live next to the config
         cfg = load_config(args.config, os.environ)
         if cfg.profile is not None:
             preload_runtime()  # before build_notifier loads winrt: see its docstring

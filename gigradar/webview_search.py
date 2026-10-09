@@ -92,9 +92,15 @@ def parse_fetch_result(result: object) -> list[Job]:
 
 
 def wait_for_token(page: Page, notifier: Notifier, clock: Callable[[], float],
-                   sleep: Callable[[float], None]) -> str:
+                   sleep: Callable[[float], None], visible: bool) -> str:
     """Token from the (hidden) page; if none after TOKEN_WAIT_S, show the window, notify,
-    and wait CLICK_WAIT_S more. Raises TokenUnavailable if it never appears."""
+    and wait CLICK_WAIT_S more. Raises TokenUnavailable if it never appears.
+    `visible`: the window is already open (the app's upwork-check), so wait CLICK_WAIT_S at once."""
+    if visible:
+        token = _poll(page, CLICK_WAIT_S, clock, sleep)
+        if token:
+            return token
+        raise TokenUnavailable(f"no Upwork token: challenge not solved within {CLICK_WAIT_S}s")
     token = _poll(page, TOKEN_WAIT_S, clock, sleep)
     if token:
         return token
@@ -112,9 +118,9 @@ def wait_for_token(page: Page, notifier: Notifier, clock: Callable[[], float],
 
 
 def run_session(page: Page, notifier: Notifier, work: Callable[[SearchFn], T],
-                clock: Callable[[], float], sleep: Callable[[float], None]) -> T:
+                clock: Callable[[], float], sleep: Callable[[float], None], visible: bool) -> T:
     """Everything that happens once the page is loading: token, then work(search)."""
-    token = wait_for_token(page, notifier, clock, sleep)
+    token = wait_for_token(page, notifier, clock, sleep, visible)
 
     def search(spec: SearchSpec) -> list[Job]:
         try:
@@ -167,13 +173,14 @@ class PywebviewPage:
 class WebViewSearcher:
     name = "webview"
 
-    def __init__(self, profile_dir: Path, notifier: Notifier, search_count: int) -> None:
+    def __init__(self, profile_dir: Path, notifier: Notifier, search_count: int, visible: bool) -> None:
         try:
             import webview  # noqa: F401  fail at startup, not mid-run
         except ImportError as exc:
             raise ConfigError("search.backend = 'webview' needs: pip install -r requirements-webview.txt") from exc
         self.profile_dir = profile_dir
         self.notifier = notifier
+        self.visible = visible  # True: show the window from the start (the app's one-time Upwork check)
         # Backstop for a hung page/GUI: every wait inside is bounded, this bounds the sum.
         self.hard_limit_s = TOKEN_WAIT_S + CLICK_WAIT_S + FETCH_TIMEOUT_S * search_count + 60
 
@@ -182,11 +189,13 @@ class WebViewSearcher:
 
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         box: dict[str, object] = {}
-        window = webview.create_window("gigradar", upwork_search.UPWORK_HOME, width=1100, height=800, hidden=True)
+        window = webview.create_window("gigradar", upwork_search.UPWORK_HOME, width=1100, height=800,
+                                      hidden=not self.visible)
 
         def session() -> None:  # runs on pywebview's worker thread; GUI owns the main thread
             try:
-                box["result"] = run_session(PywebviewPage(window), self.notifier, work, time.monotonic, time.sleep)
+                box["result"] = run_session(PywebviewPage(window), self.notifier, work, time.monotonic, time.sleep,
+                                           self.visible)
             except BaseException as exc:  # noqa: BLE001  re-raised on the caller's thread below
                 box["error"] = exc
             finally:

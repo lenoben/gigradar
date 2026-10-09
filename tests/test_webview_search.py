@@ -113,13 +113,13 @@ class SessionTest(unittest.TestCase):
 
     def test_token_while_hidden_no_show_no_notify(self) -> None:
         page, notifier = self.page(3, False, []), FakeNotifier(False)
-        self.assertEqual(wait_for_token(page, notifier, self.clock, self.clock.sleep), "tok")
+        self.assertEqual(wait_for_token(page, notifier, self.clock, self.clock.sleep, False), "tok")
         self.assertFalse(page.shown)
         self.assertEqual(notifier.sent, [])
 
     def test_click_needed_shows_window_and_notifies(self) -> None:
         page, notifier = self.page(TOKEN_WAIT_S + 30, True, []), FakeNotifier(False)
-        self.assertEqual(wait_for_token(page, notifier, self.clock, self.clock.sleep), "tok")
+        self.assertEqual(wait_for_token(page, notifier, self.clock, self.clock.sleep, False), "tok")
         self.assertTrue(page.shown)
         self.assertEqual(len(notifier.sent), 1)
         self.assertIn("click", notifier.sent[0][0])
@@ -127,27 +127,37 @@ class SessionTest(unittest.TestCase):
     def test_no_click_in_time_is_token_unavailable(self) -> None:
         page, notifier = self.page(None, True, []), FakeNotifier(True)  # notifier failure is tolerated
         with self.assertRaises(TokenUnavailable):
-            wait_for_token(page, notifier, self.clock, self.clock.sleep)
+            wait_for_token(page, notifier, self.clock, self.clock.sleep, False)
         self.assertTrue(page.shown)
         self.assertLessEqual(self.clock.now, TOKEN_WAIT_S + CLICK_WAIT_S + 2)
+
+    def test_visible_window_waits_for_the_click_at_once(self) -> None:
+        page, notifier = self.page(TOKEN_WAIT_S + 30, False, []), FakeNotifier(False)
+        self.assertEqual(wait_for_token(page, notifier, self.clock, self.clock.sleep, True), "tok")
+        self.assertFalse(page.shown)          # already open: nothing to show
+        self.assertEqual(notifier.sent, [])   # and nobody to tell
+        page = self.page(None, False, [])
+        with self.assertRaises(TokenUnavailable):
+            wait_for_token(page, notifier, self.clock, self.clock.sleep, True)
+        self.assertLessEqual(self.clock.now, TOKEN_WAIT_S + 30 + CLICK_WAIT_S + 2)
 
     def test_one_fetch_per_search(self) -> None:
         ok = {"status": 200, "cf": None, "text": graphql_body([RAW_JOB], 1)}
         page = self.page(0, False, [ok, ok])
         result = run_session(page, FakeNotifier(False), lambda search: [search(SPEC), search(SPEC)],
-                             self.clock, self.clock.sleep)
+                             self.clock, self.clock.sleep, False)
         self.assertEqual([len(r) for r in result], [1, 1])
         self.assertEqual(len(page.scripts), 2)
 
     def test_fetch_timeout_is_blocked(self) -> None:
         page = self.page(0, False, [TimeoutError()])
         with self.assertRaises(SearchBlocked):
-            run_session(page, FakeNotifier(False), lambda search: search(SPEC), self.clock, self.clock.sleep)
+            run_session(page, FakeNotifier(False), lambda search: search(SPEC), self.clock, self.clock.sleep, False)
 
     def test_no_token_means_no_fetch(self) -> None:
         page = self.page(None, True, [])
         with self.assertRaises(TokenUnavailable):
-            run_session(page, FakeNotifier(False), lambda search: search(SPEC), self.clock, self.clock.sleep)
+            run_session(page, FakeNotifier(False), lambda search: search(SPEC), self.clock, self.clock.sleep, False)
         self.assertEqual(page.scripts, [])
 
 

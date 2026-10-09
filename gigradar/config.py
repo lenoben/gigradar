@@ -7,6 +7,7 @@ Secrets — Telegram bot token/chat id, proxy URL — come ONLY from the environ
 from __future__ import annotations
 
 import os
+import sys
 import tomllib
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
@@ -175,16 +176,34 @@ def default_model_dir(environ: Mapping[str, str]) -> Path:
     return _data_root(environ) / "models"
 
 
+HOME_ENV = "GIGRADAR_HOME"
+
+
 def _data_root(environ: Mapping[str, str]) -> Path:
+    """GIGRADAR_HOME if set, else %LOCALAPPDATA%\gigradar (~/.local/share/gigradar off Windows)."""
+    override = environ.get(HOME_ENV)
+    if override:
+        return Path(override)
     base = environ.get("LOCALAPPDATA")
     root = Path(base) if base else Path.home() / ".local" / "share"
     return root / "gigradar"
 
 
+def app_home(environ: Mapping[str, str], frozen: bool, repo_root: Path) -> Path:
+    """Where config, .env, data/ and logs/ live: GIGRADAR_HOME, else the per-user data dir.
+    One exception keeps a source checkout working unchanged: when not frozen and the repo root
+    holds a gigradar.toml, that checkout is the home (the scheduled task of a git clone)."""
+    if environ.get(HOME_ENV):
+        return Path(environ[HOME_ENV])
+    if not frozen and (repo_root / "gigradar.toml").is_file():
+        return repo_root
+    return _data_root(environ)
+
+
 def default_paths() -> tuple[Path, Path]:
-    """(gigradar.toml, .env) at the repo root, independent of the current directory."""
-    root = Path(__file__).resolve().parent.parent
-    return root / "gigradar.toml", root / ".env"
+    """(gigradar.toml, .env) of the app home, independent of the current directory."""
+    home = app_home(os.environ, bool(getattr(sys, "frozen", False)), Path(__file__).resolve().parent.parent)
+    return home / "gigradar.toml", home / ".env"
 
 
 def load_default() -> Config:
