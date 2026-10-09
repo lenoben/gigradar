@@ -29,7 +29,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
 
-from gigradar import appsetup, doctor, netutil, tgconnect, webview2
+from gigradar import appsetup, doctor, netutil, taskreg, tgconnect, webview2
 from gigradar.config import ConfigError, Config, app_home, load_config, load_dotenv
 from gigradar.store import (StoreError, delete_label, filter_new, open_existing, open_store, recent_jobs, record_searches,
                             save_label, seen_count, stored_job)
@@ -80,6 +80,8 @@ class Context:
     task_query: doctor.TaskQueryFn
     webview2_version: Callable[[], str | None]   # installed WebView2 runtime version, None when missing
     content_length: Callable[[str], int | None]  # size of a download (HEAD request), None when unknown
+    schtasks: taskreg.SchtasksFn                 # runs schtasks.exe
+    task_next_run: doctor.NextRunFn              # when the scheduled task runs next
     secrets: list[str] = field(default_factory=list)   # values replaced by <redacted> in all output
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -105,7 +107,8 @@ def real_context() -> Context:
                    now=lambda: datetime.now(timezone.utc), post=urllib_post, sleep=time.sleep,
                    task_query=doctor.schtasks_query,
                    webview2_version=lambda: webview2.installed_version(webview2.read_registry),
-                   content_length=head_content_length)
+                   content_length=head_content_length, schtasks=taskreg.run_schtasks,
+                   task_next_run=doctor.schtasks_next_run)
 
 
 def head_content_length(url: str) -> int | None:
@@ -175,7 +178,7 @@ def cmd_setup_apply(args: argparse.Namespace, ctx: Context) -> dict:
                 ctx.secrets.append(value)
     home = args.home if args.home else ctx.home
     try:
-        return appsetup.apply(home, answers, args.force, ctx.now(), ctx.environ)
+        return appsetup.apply(home, answers, args.force, not args.no_backup, ctx.now(), ctx.environ)
     except appsetup.SetupError as exc:
         raise CommandError(exc.code, _redact(str(exc), ctx)) from None
 
@@ -324,7 +327,7 @@ def cmd_doctor(args: argparse.Namespace, ctx: Context) -> dict:
     if env.get("TELEGRAM_BOT_TOKEN"):
         ctx.secrets.append(env["TELEGRAM_BOT_TOKEN"])
     checks = doctor.run_checks(path, ctx.environ, ctx.post, ctx.task_query, args.task_name, not args.offline,
-                                 ctx.webview2_version)
+                                 ctx.webview2_version, ctx.task_next_run)
     status = doctor.worst(checks)
     result = {"status": status, "checks": [asdict(c) for c in checks]}
     if status == doctor.FAIL:
@@ -366,7 +369,17 @@ def cmd_model_download(args: argparse.Namespace, ctx: Context) -> dict:
 
 
 def cmd_notify_test(args: argparse.Namespace, ctx: Context) -> dict:
-    """One sample job through every configured channel (toast, Telegram): the app's "send a test" button."""
+    """One sample job through every configured channel (toast, Telegram): the app's "send a test" button.
+    `--channel toast` needs no config at all (the setup tests the toast before anything is saved)."""
+    if args.channel == "toast":
+        from gigradar.notify import ToastNotifier
+        from gigradar.telegram import sample_alert
+
+        try:
+            ToastNotifier().notify_jobs([sample_alert()])
+        except (ConfigError, RuntimeError) as exc:
+            raise CommandError("notify_failed", _redact(str(exc), ctx)) from None
+        return {"channels": ["toast"]}
     cfg, _ = load(args, ctx)
     from gigradar.embed import preload_runtime
     from gigradar.notify import build_notifier
@@ -379,6 +392,28 @@ def cmd_notify_test(args: argparse.Namespace, ctx: Context) -> dict:
     except (ConfigError, RuntimeError) as exc:
         raise CommandError("notify_failed", _redact(str(exc), ctx)) from None
     return {"channels": ["log", *cfg.notify_channels]}
+
+
+def cmd_task_register(args: argparse.Namespace, ctx: Context) -> dict:
+    """Schedule `run-once` of the packaged app (gigradarw.exe, no console window) every N minutes."""
+    exe = args.exe if args.exe else Path(sys.executable).with_name("gigradarw.exe")
+    if not args.exe and not getattr(sys, "frozen", False):
+        raise CommandError("not_applicable", "task-register schedules the packaged app; pass --exe PATH from a source checkout")
+    config = config_path(args, ctx)
+    if not config.is_file():
+        raise CommandError("config", f"{config} not found: run setup-apply first")
+    try:
+        return taskreg.register(args.task_name, exe, config.resolve(), args.interval, ctx.now(),
+                                taskreg.current_user(ctx.environ), ctx.schtasks)
+    except taskreg.TaskError as exc:
+        raise CommandError(exc.code, str(exc)) from None
+
+
+def cmd_task_unregister(args: argparse.Namespace, ctx: Context) -> dict:
+    try:
+        return taskreg.unregister(args.task_name, ctx.schtasks)
+    except taskreg.TaskError as exc:
+        raise CommandError(exc.code, str(exc)) from None
 
 
 def cmd_selftest(args: argparse.Namespace, ctx: Context) -> dict:
@@ -430,6 +465,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--answers", required=True, help="answers JSON file, or - for stdin")
     p.add_argument("--home", type=Path, default=None, help="write here instead of the app home")
     p.add_argument("--force", action="store_true", help="replace existing files (backed up first)")
+    p.add_argument("--no-backup", action="store_true", help="with --force: do not copy the replaced files first")
     p.set_defaults(run=cmd_setup_apply)
 
     p = sub.add_parser("telegram-connect", parents=[common], help="verify a bot, find the chat id, send a test message")
@@ -457,8 +493,19 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--task-name", default=DEFAULT_TASK, help="scheduled task to inspect")
     p.set_defaults(run=cmd_doctor)
 
-    sub.add_parser("notify-test", parents=[common], help="send one sample job to every configured channel"
-                   ).set_defaults(run=cmd_notify_test)
+    p = sub.add_parser("notify-test", parents=[common], help="send one sample job to every configured channel")
+    p.add_argument("--channel", choices=("all", "toast"), default="all", help="toast: only the Windows toast, no config needed")
+    p.set_defaults(run=cmd_notify_test)
+
+    p = sub.add_parser("task-register", parents=[common], help="schedule run-once of the packaged app")
+    p.add_argument("--task-name", default=DEFAULT_TASK)
+    p.add_argument("--interval", type=int, default=30, help="minutes between runs (15 to 1440)")
+    p.add_argument("--exe", type=Path, default=None, help="program to schedule (default: gigradarw.exe next to this one)")
+    p.set_defaults(run=cmd_task_register)
+
+    p = sub.add_parser("task-unregister", parents=[common], help="remove the scheduled task")
+    p.add_argument("--task-name", default=DEFAULT_TASK)
+    p.set_defaults(run=cmd_task_unregister)
 
     p = sub.add_parser("selftest", parents=[common], help="check the native-library load order (for packaged builds)")
     p.add_argument("--order", required=True, choices=("preload", "toasts-first", "onnx-first"))

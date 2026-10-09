@@ -28,12 +28,15 @@ LOG_TAIL_LINES = 300
 ERROR_CHARS = 200
 RESULT_MEANING = {75: "stopped early (Upwork check not passed); retried at the next run"}
 NOT_YET_RUN, RUNNING = 267011, 267009
+NO_WINDOW = 0x08000000 if sys.platform == "win32" else 0
 ERROR_LINE = re.compile(r"\sERROR\s")
 LOG_STAMP = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ ")
 ERROR_ENTRIES = 5
 
 # (task name) -> csv text of `schtasks /query /v /fo csv`, or None when the task does not exist
 TaskQueryFn = Callable[[str], str | None]
+# (task name) -> the next run as an ISO 8601 local time, or None
+NextRunFn = Callable[[str], str | None]
 
 
 @dataclass(frozen=True)
@@ -43,6 +46,7 @@ class Check:
     message: str
     fix: str | None
     details: tuple[str, ...] = ()
+    data: dict | None = None      # machine-readable extras (the scheduled task: its next run)
 
 
 def ok(name: str, message: str) -> Check:
@@ -57,8 +61,22 @@ def schtasks_query(task_name: str) -> str | None:
     return done.stdout if done.returncode == 0 else None
 
 
+def schtasks_next_run(task_name: str) -> str | None:
+    """The task's next run as ISO 8601 local time. schtasks prints it in the system's date format (not parseable
+    across locales), so ask the ScheduledTasks module."""
+    if sys.platform != "win32":
+        raise OSError("scheduled tasks are Windows-only")
+    script = (f"(Get-ScheduledTaskInfo -TaskPath '{TASK_FOLDER}' -TaskName '{task_name}').NextRunTime"
+              ".ToString('yyyy-MM-ddTHH:mm:ss')")
+    done = subprocess.run(["powershell", "-NoProfile", "-NonInteractive", "-Command", script], capture_output=True,
+                          text=True, timeout=30, check=False, creationflags=NO_WINDOW)
+    text = done.stdout.strip()
+    return text if done.returncode == 0 and re.fullmatch(r"\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d", text) else None
+
+
 def run_checks(config_path: Path, environ: Mapping[str, str], post: PostFn, task_query: TaskQueryFn,
-               task_name: str, network: bool, webview2_version: Callable[[], str | None]) -> list[Check]:
+               task_name: str, network: bool, webview2_version: Callable[[], str | None],
+               next_run: NextRunFn) -> list[Check]:
     env = dict(environ)
     try:
         load_dotenv(config_path.parent / ".env", env)
@@ -77,7 +95,7 @@ def run_checks(config_path: Path, environ: Mapping[str, str], post: PostFn, task
     checks.append(_webview(cfg))
     checks.append(_model(cfg))
     checks.append(_store(cfg))
-    checks.append(_task(task_query, task_name))
+    checks.append(_task(task_query, task_name, next_run))
     checks.append(_log_errors(config_path.parent / "logs" / "gigradar.log", env))
     return checks
 
@@ -161,7 +179,7 @@ def _store(cfg: Config) -> Check:
         conn.close()
 
 
-def _task(task_query: TaskQueryFn, task_name: str) -> Check:
+def _task(task_query: TaskQueryFn, task_name: str, next_run: NextRunFn) -> Check:
     fix = f"register it: gigradar-task.ps1 -Register -TaskName {task_name}"
     try:
         text = task_query(task_name)
@@ -178,10 +196,14 @@ def _task(task_query: TaskQueryFn, task_name: str) -> Check:
     except ValueError:
         return Check("scheduled_task", WARN, f"registered; unreadable last result {row.get('Last Result')!r}", None)
     last = row.get("Last Run Time", "?")
-    if result in (0, RUNNING):
-        return ok("scheduled_task", f"registered, last run {last}, result {result}")
-    if result == NOT_YET_RUN:
-        return Check("scheduled_task", WARN, "registered, has not run yet", None)
+    if result in (0, RUNNING, NOT_YET_RUN):
+        try:
+            upcoming = next_run(task_name)
+        except (OSError, subprocess.SubprocessError):
+            upcoming = None
+        # a task registered a moment ago has not run yet: that is normal, not a problem
+        message = "registered, first run soon" if result == NOT_YET_RUN else f"registered, last run {last}, result {result}"
+        return Check("scheduled_task", OK, message, None, (), {"next_run": upcoming})
     meaning = RESULT_MEANING.get(result, "failed")
     status = WARN if result in RESULT_MEANING else FAIL
     return Check("scheduled_task", status, f"last run {last}: result {result} ({meaning})", "see the log for the reason")

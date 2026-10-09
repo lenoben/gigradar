@@ -66,7 +66,10 @@ def _table(answers: dict, key: str, allowed: set[str]) -> dict:
 
 def render_toml(answers: dict) -> str:
     """gigradar.toml text for the answers. Values are validated afterwards by load_config."""
+    # The browser profile and the model live next to this file, so a scheduled run (which has no GIGRADAR_HOME in its
+    # environment) finds the same ones as the app that wrote the config, wherever the app home is.
     lines = ["# Written by gigradar setup. Secrets are in .env, never here.", "",
+             "[search]", 'webview_profile = "webview2"', "",
              "[notify]", f"channels = {toml_value(_channels(answers))}", ""]
     profile = _table(answers, "profile", PROFILE_KEYS)
     if profile:
@@ -77,8 +80,9 @@ def render_toml(answers: dict) -> str:
                 lines.append(f"{key} = {toml_value(profile[key])}")
         lines.append("")
     scoring = _table(answers, "scoring", SCORING_KEYS)
-    if scoring:
+    if scoring or profile:
         lines.append("[scoring]")
+        lines.append('model_dir = "models"')
         lines.extend(f"{key} = {toml_value(scoring[key])}" for key in sorted(scoring))
         lines.append("")
     searches = answers.get("searches")
@@ -116,8 +120,9 @@ def render_env(answers: dict) -> str | None:
     return f"TELEGRAM_BOT_TOKEN={token}\nTELEGRAM_CHAT_ID={chat_id}\n"
 
 
-def apply(home: Path, answers: object, force: bool, now: datetime, environ: dict[str, str]) -> dict:
-    """Write config files into `home`. Returns {"written": [...], "backup": dir or None}."""
+def apply(home: Path, answers: object, force: bool, backup: bool, now: datetime, environ: dict[str, str]) -> dict:
+    """Write config files into `home`. Returns {"written": [...], "backup": dir or None}.
+    `backup=False` skips copying replaced files (for a caller that wrote them itself a moment ago)."""
     if not isinstance(answers, dict):
         raise SetupError("invalid_answers", "the answers must be a JSON object")
     unknown = set(answers) - TOP_KEYS
@@ -151,7 +156,7 @@ def apply(home: Path, answers: object, force: bool, now: datetime, environ: dict
         except ConfigError as exc:
             raise SetupError("invalid_config", str(exc)) from None
         backup_dir = None
-        if existing:
+        if existing and backup:
             backup_dir = home / "backups" / f"{now:%Y%m%dT%H%M%SZ}"
             if backup_dir.exists():
                 raise SetupError("exists", f"backup folder {backup_dir} already exists; not overwriting it")

@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the main window may do: call the app's own commands and open links in the browser.",
+  "windows": ["main"],
+  "permissions": ["core:default", "opener:allow-open-url"]
+}

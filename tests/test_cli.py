@@ -74,17 +74,25 @@ class CliCase(unittest.TestCase):
         self.pauses: list[float] = []
         self.webview2: str | None = "154.0.3.2"
         self.sizes: dict[str, int] = {}
+        self.schtasks_calls: list[list[str]] = []
+        self.schtasks_code = 0
+        self.next_run: str | None = "2026-10-09T10:30:00"
         self.log_capture = io.StringIO()
         handler = logging.StreamHandler(self.log_capture)
         self.addCleanup(logging.getLogger().removeHandler, handler)
         logging.getLogger().addHandler(handler)
         self.addCleanup(self._tmp.cleanup)
 
+    def fake_schtasks(self, argv: list[str]) -> tuple[int, str]:
+        self.schtasks_calls.append(argv)
+        return self.schtasks_code, ""
+
     def ctx(self, stdin: str, env: dict[str, str] | None) -> cli.Context:
         return cli.Context(environ={} if env is None else env, home=self.home, stdin=io.StringIO(stdin), stdout=self.out,
                            now=lambda: NOW, post=self.telegram, sleep=self.pauses.append,
                            task_query=lambda name: self.tasks.get(name), webview2_version=lambda: self.webview2,
-                           content_length=lambda url: self.sizes.get(url))
+                           content_length=lambda url: self.sizes.get(url), schtasks=self.fake_schtasks,
+                           task_next_run=lambda name: self.next_run)
 
     def run_cli(self, *argv: str, stdin: str = "", env: dict[str, str] | None = None) -> tuple[int, list[dict]]:
         self.out.seek(0)
@@ -164,6 +172,22 @@ class AppHomeTest(unittest.TestCase):
 
 
 class SetupApplyTest(CliCase):
+    def test_browser_profile_and_model_live_next_to_the_config(self) -> None:
+        """A scheduled run has no GIGRADAR_HOME in its environment: it must still find this home's data."""
+        from gigradar.config import load_config
+        answers = json.dumps({"searches": [SEARCH], "profile": {"markdown": PROFILE_MD}})
+        self.assertEqual(self.result("setup-apply", "--answers", "-", stdin=answers)[0], 0)
+        cfg = load_config(self.home / "gigradar.toml", {})          # an environment without GIGRADAR_HOME
+        self.assertEqual(cfg.webview_profile, self.home / "webview2")
+        self.assertEqual(cfg.scoring.model_dir, self.home / "models")
+
+    def test_force_without_backup_replaces_the_files_and_leaves_no_backup_folder(self) -> None:
+        answers = json.dumps({"searches": [SEARCH]})
+        self.assertEqual(self.result("setup-apply", "--answers", "-", stdin=answers)[0], 0)
+        code, result = self.result("setup-apply", "--answers", "-", "--force", "--no-backup", stdin=answers)
+        self.assertEqual((code, result["backup"]), (0, None))
+        self.assertFalse((self.home / "backups").exists())
+
     def answers(self, **extra: object) -> str:
         return json.dumps({"searches": [SEARCH], "notify": {"channels": ["toast"]}, **extra})
 
@@ -384,13 +408,25 @@ class DoctorTest(CliCase):
         self.assertEqual(checks["recent_errors"]["status"], "WARN")
         self.assertIn("run failed", checks["recent_errors"]["message"])   # and no token: run_cli asserts it
 
+    def test_scheduled_task_reports_its_next_run(self) -> None:
+        self.write_config()
+        header = '"HostName","TaskName","Next Run Time","Status","Last Run Time","Last Result"\n'
+        self.tasks["gigradar-watch"] = header + '"PC","\\gigradar\\gigradar-watch","n/a","Ready","2026-10-09 09:53:00","0"\n'
+        _, result = self.result("doctor", "--offline")
+        task = next(c for c in result["checks"] if c["name"] == "scheduled_task")
+        self.assertEqual(task["data"], {"next_run": "2026-10-09T10:30:00"})
+        self.next_run = None                     # the lookup found nothing: still OK, just no time to show
+        _, result = self.result("doctor", "--offline")
+        task = next(c for c in result["checks"] if c["name"] == "scheduled_task")
+        self.assertEqual((task["status"], task["data"]), ("OK", {"next_run": None}))
+
     def test_scheduled_task_results(self) -> None:
         self.write_config()
         header = '"HostName","TaskName","Next Run Time","Status","Last Run Time","Last Result"\n'
 
         def row(result: int) -> str:
             return header + f'"PC","\\gigradar\\gigradar-watch","n/a","Ready","2026-10-09 09:53:00","{result}"\n'
-        for result, expected in ((0, "OK"), (267011, "WARN"), (75, "WARN"), (3221225477, "FAIL"), (1, "FAIL")):
+        for result, expected in ((0, "OK"), (267011, "OK"), (75, "WARN"), (3221225477, "FAIL"), (1, "FAIL")):
             with self.subTest(result=result):
                 self.tasks["gigradar-watch"] = row(result)
                 self.assertEqual(self.statuses("--offline")["scheduled_task"], expected)
@@ -582,7 +618,46 @@ class UpworkCheckTest(CliCase):
         self.assertEqual((code, result["error"]["code"]), (1, "not_applicable"))
 
 
+class TaskCommandsTest(CliCase):
+    def setUp(self) -> None:
+        super().setUp()
+        self.exe = self.home / "gigradarw.exe"
+        self.exe.write_bytes(b"x")
+
+    def test_register_schedules_run_once_with_this_config(self) -> None:
+        self.write_config()
+        code, result = self.result("task-register", "--task-name", "gigradar-app-test", "--exe", str(self.exe))
+        self.assertEqual((code, result["task_name"], result["interval_minutes"]), (0, "gigradar-app-test", 30))
+        self.assertEqual(self.schtasks_calls[0][:3], ["/create", "/tn", "\\gigradar\\gigradar-app-test"])
+
+    def test_register_needs_a_config_and_an_exe_when_not_packaged(self) -> None:
+        code, result = self.result("task-register", "--exe", str(self.exe))
+        self.assertEqual((code, result["error"]["code"]), (1, "config"))
+        self.write_config()
+        code, result = self.result("task-register")
+        self.assertEqual((code, result["error"]["code"]), (1, "not_applicable"))
+        self.assertEqual(self.schtasks_calls, [])
+
+    def test_unregister(self) -> None:
+        code, result = self.result("task-unregister", "--task-name", "gigradar-app-test")
+        self.assertEqual((code, result["removed"]), (0, True))
+        code, result = self.result("task-unregister", "--task-name", "bad name")
+        self.assertEqual((code, result["error"]["code"]), (1, "invalid_task_name"))
+
+
 class NotifyTestTest(CliCase):
+    def test_toast_only_needs_no_config(self) -> None:
+        sent: list = []
+
+        class Recorder:
+            def notify_jobs(self, alerts):
+                sent.extend(alerts)
+
+        with mock.patch("gigradar.notify.ToastNotifier", Recorder):
+            code, result = self.result("notify-test", "--channel", "toast")
+        self.assertEqual((code, result["channels"], len(sent)), (0, ["toast"], 1))
+
+
     def test_sends_one_sample_job_through_the_configured_channels(self) -> None:
         self.write_config()
         sent: list = []
