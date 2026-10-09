@@ -15,6 +15,7 @@ from unittest import mock
 
 from gigradar import cli
 from gigradar.config import HOME_ENV, app_home
+from gigradar.webview2 import EVERGREEN_URL, WebView2Missing
 from gigradar.store import mark_seen, open_store, save_job_score, save_label
 from gigradar.score import Score
 from gigradar.search import SearchBlocked
@@ -71,6 +72,8 @@ class CliCase(unittest.TestCase):
         self.telegram = FakeTelegram([private_update(int(CHAT), "Ada")])
         self.tasks: dict[str, str | None] = {}
         self.pauses: list[float] = []
+        self.webview2: str | None = "154.0.3.2"
+        self.sizes: dict[str, int] = {}
         self.log_capture = io.StringIO()
         handler = logging.StreamHandler(self.log_capture)
         self.addCleanup(logging.getLogger().removeHandler, handler)
@@ -80,7 +83,8 @@ class CliCase(unittest.TestCase):
     def ctx(self, stdin: str, env: dict[str, str] | None) -> cli.Context:
         return cli.Context(environ={} if env is None else env, home=self.home, stdin=io.StringIO(stdin), stdout=self.out,
                            now=lambda: NOW, post=self.telegram, sleep=self.pauses.append,
-                           task_query=lambda name: self.tasks.get(name))
+                           task_query=lambda name: self.tasks.get(name), webview2_version=lambda: self.webview2,
+                           content_length=lambda url: self.sizes.get(url))
 
     def run_cli(self, *argv: str, stdin: str = "", env: dict[str, str] | None = None) -> tuple[int, list[dict]]:
         self.out.seek(0)
@@ -301,6 +305,39 @@ class DoctorTest(CliCase):
         self.assertEqual(st["webview_profile"], "WARN")
         self.assertEqual(st["recent_errors"], "OK")
 
+    def test_missing_webview2_runtime_is_a_failure_with_the_download_link(self) -> None:
+        self.write_config()
+        self.webview2 = None
+        code, result = self.result("doctor", "--offline")
+        check = next(c for c in result["checks"] if c["name"] == "webview2_runtime")
+        self.assertEqual((code, check["status"], result["status"]), (1, "FAIL", "FAIL"))
+        self.assertIn(EVERGREEN_URL, check["fix"])
+        profile = next(c for c in result["checks"] if c["name"] == "webview_profile")
+        self.assertEqual(profile["status"], "WARN")      # a separate check: the profile folder
+
+    def test_installed_webview2_runtime_is_ok_and_not_needed_for_curl(self) -> None:
+        self.write_config()
+        _, result = self.result("doctor", "--offline")
+        check = next(c for c in result["checks"] if c["name"] == "webview2_runtime")
+        self.assertEqual((check["status"], check["message"]), ("OK", "WebView2 runtime 154.0.3.2"))
+        self.write_config('[search]\nbackend = "curl"\n')
+        self.webview2 = None
+        self.assertEqual(self.statuses("--offline")["webview2_runtime"], "OK")
+
+    def test_repeated_errors_collapse_into_one_entry_with_a_count(self) -> None:
+        self.write_config()
+        (self.home / "logs").mkdir()
+        lines = [f"2026-10-09 13:03:{i:02d},428 ERROR [pywebview] get_cookies() is not implemented" for i in range(40)]
+        lines.insert(10, "2026-10-09 13:00:01,100 ERROR [gigradar] run failed: boom")
+        lines.append("2026-10-09 13:04:00,000 INFO [gigradar] done")
+        (self.home / "logs" / "gigradar.log").write_text("\n".join(lines) + "\n", encoding="utf-8")
+        _, result = self.result("doctor", "--offline")
+        check = next(c for c in result["checks"] if c["name"] == "recent_errors")
+        self.assertEqual(check["status"], "WARN")
+        self.assertIn("41 ERROR lines, 2 distinct", check["message"])
+        self.assertEqual(check["details"], ["40x ERROR [pywebview] get_cookies() is not implemented",
+                                            "ERROR [gigradar] run failed: boom"])
+
     def test_model_missing_is_a_failure_and_cached_is_ok(self) -> None:
         (self.home / "profile.md").write_text(PROFILE_MD, encoding="utf-8")
         models = self.home / "models"
@@ -427,8 +464,12 @@ class FakeSearcher:
 
     outcome: object = [make_job("~10"), make_job("~11")]
     searches = 0
+    run_errors: list[Exception] = []   # raised by run() before the page loads, one per window
 
     def run(self, work):
+        if FakeSearcher.run_errors:
+            raise FakeSearcher.run_errors.pop(0)
+
         def search(spec):
             FakeSearcher.searches += 1
             outcome = FakeSearcher.outcome
@@ -448,6 +489,7 @@ class UpworkCheckTest(CliCase):
         super().setUp()
         FakeSearcher.instances.clear()
         FakeSearcher.searches = 0
+        FakeSearcher.run_errors = []
         FakeSearcher.outcome = [make_job("~10"), make_job("~11")]
         patcher = mock.patch("gigradar.webview_search.WebViewSearcher", FakeSearcher)
         patcher.start()
@@ -473,7 +515,8 @@ class UpworkCheckTest(CliCase):
         self.assertEqual(code, 0, lines)
         self.assertEqual([line["event"] for line in lines if "event" in line], ["window", "retry"])
         self.assertEqual((lines[-1]["jobs_found"], FakeSearcher.searches, len(FakeSearcher.instances)), (1, 2, 1))
-        self.assertEqual(self.pauses, [cli.CHECK_PAUSE_S])
+        self.assertEqual(self.pauses, [cli.CHECK_PAUSES_S[0]])
+        self.assertEqual(lines[-1]["attempts"], {"window": 1, "fetch": 2})
 
     def test_gives_up_after_the_last_attempt(self) -> None:
         self.write_config()
@@ -481,6 +524,7 @@ class UpworkCheckTest(CliCase):
         code, result = self.result("upwork-check")
         self.assertEqual((code, result["error"]["code"], FakeSearcher.searches), (1, "blocked", cli.CHECK_ATTEMPTS))
         self.assertFalse((self.home / "data" / "gigradar.db").exists())
+        self.assertEqual(self.pauses, list(cli.CHECK_PAUSES_S))      # short backoff, nothing longer
 
     def test_blocked_or_unsolved_check_is_a_clean_error_and_stores_nothing(self) -> None:
         self.write_config()
@@ -496,6 +540,41 @@ class UpworkCheckTest(CliCase):
         code, result = self.result("upwork-check")
         self.assertEqual((code, result["error"]["code"]), (1, "window_failed"))
         self.assertIn("again", result["error"]["message"])
+
+    def test_a_slow_window_start_opens_a_new_window_and_succeeds(self) -> None:
+        from webview.errors import WebViewException
+        self.write_config()
+        FakeSearcher.run_errors = [WebViewException("Main window failed to start")] * 2
+        code, lines = self.run_cli("upwork-check")
+        self.assertEqual(code, 0, lines)
+        retries = [line for line in lines if line.get("event") == "retry"]
+        self.assertEqual([(r["kind"], r["attempt"]) for r in retries], [("window", 2), ("window", 3)])
+        self.assertEqual(lines[-1]["attempts"], {"window": 3, "fetch": 1})
+        self.assertEqual(self.pauses, list(cli.CHECK_PAUSES_S))
+
+    def test_a_window_that_never_starts_gives_up_after_three_tries(self) -> None:
+        from webview.errors import WebViewException
+        self.write_config()
+        FakeSearcher.run_errors = [WebViewException("Main window failed to start")] * 5
+        code, result = self.result("upwork-check")
+        self.assertEqual((code, result["error"]["code"]), (1, "window_failed"))
+        self.assertIn("3 times", result["error"]["message"])
+        self.assertEqual(len(FakeSearcher.run_errors), 2)        # exactly three windows were tried
+
+    def test_missing_webview2_fails_fast_before_any_window(self) -> None:
+        self.write_config()
+        self.webview2 = None
+        code, lines = self.run_cli("upwork-check")
+        self.assertEqual((code, lines[-1]["error"]["code"]), (1, "webview2_missing"))
+        self.assertIn(EVERGREEN_URL, lines[-1]["error"]["message"])
+        self.assertEqual((len(lines), FakeSearcher.instances, self.pauses), (1, [], []))     # no window event, no retry
+
+    def test_the_searcher_reporting_a_missing_runtime_is_not_retried(self) -> None:
+        self.write_config()
+        FakeSearcher.run_errors = [WebView2Missing("The Microsoft Edge WebView2 runtime is not installed " + EVERGREEN_URL)] * 3
+        code, result = self.result("upwork-check")
+        self.assertEqual((code, result["error"]["code"]), (1, "webview2_missing"))
+        self.assertEqual((len(FakeSearcher.run_errors), self.pauses), (2, []))
 
     def test_curl_backend_is_not_applicable(self) -> None:
         self.write_config('[search]\nbackend = "curl"\n')
@@ -534,6 +613,26 @@ class NotifyTestTest(CliCase):
         self.assertEqual((code, result["error"]["code"]), (1, "config"))
 
 
+class HeadContentLengthTest(unittest.TestCase):
+    class Response:
+        headers = {"Content-Length": "1234"}
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    def test_reads_the_content_length(self) -> None:
+        with mock.patch("urllib.request.urlopen", return_value=self.Response()):
+            self.assertEqual(cli.head_content_length("https://example.test/f"), 1234)
+
+    def test_unreachable_means_unknown(self) -> None:
+        import urllib.error
+        with mock.patch("urllib.request.urlopen", side_effect=urllib.error.URLError("offline")):
+            self.assertIsNone(cli.head_content_length("https://example.test/f"))
+
+
 class FakeEmbedder:
     calls: list[bool] = []
     fail = False
@@ -559,7 +658,9 @@ class ModelDownloadTest(CliCase):
         super().setUp()
         FakeEmbedder.calls.clear()
         FakeEmbedder.fail = False
+        self.url = "https://example.test/m.onnx"
         for patcher in (mock.patch("gigradar.embed.FastEmbedder", FakeEmbedder),
+                        mock.patch("gigradar.embed.model_file_url", lambda model: self.url),
                         mock.patch.object(cli, "PROGRESS_INTERVAL_S", 0.01)):
             patcher.start()
             self.addCleanup(patcher.stop)
@@ -576,6 +677,32 @@ class ModelDownloadTest(CliCase):
         self.assertEqual(lines[-1]["ok"], True)
         self.assertEqual((lines[-1]["dim"], lines[-1]["bytes"]), (3, 5000))
         self.assertEqual(FakeEmbedder.calls, [False, True])     # download, then the offline load check
+
+    def test_total_comes_from_the_servers_content_length(self) -> None:
+        self.write_config(f'[scoring]\nmodel_dir = "models"\n')
+        self.sizes[self.url] = 4_000
+        _, lines = self.run_cli("model-download")
+        self.assertEqual(lines[0]["total_bytes"], 4_000 + cli.MODEL_EXTRAS_BYTES)
+        percents = [line["percent"] for line in lines if line.get("event") == "progress"]
+        self.assertTrue(percents and all(0 <= p <= 99 for p in percents))
+
+    def test_unknown_size_means_no_percentage_instead_of_a_wrong_one(self) -> None:
+        self.write_config(f'[scoring]\nmodel_dir = "models"\n')
+        _, lines = self.run_cli("model-download")
+        self.assertIsNone(lines[0]["total_bytes"])
+        self.assertTrue(all(line["percent"] is None for line in lines if line.get("event") == "progress"))
+
+    def test_the_hugging_face_cache_is_not_counted_twice(self) -> None:
+        blobs = self.home / "m" / "models--x--y" / "blobs"
+        snap = self.home / "m" / "models--x--y" / "snapshots" / "rev"
+        blobs.mkdir(parents=True)
+        snap.mkdir(parents=True)
+        (blobs / "abc").write_bytes(b"x" * 1000)
+        (snap / "model.onnx").write_bytes(b"x" * 1000)          # a copy where symlinks are not available
+        self.assertEqual(cli._dir_bytes(self.home / "m"), 1000)
+        (self.home / "plain").mkdir()
+        (self.home / "plain" / "f").write_bytes(b"x" * 7)
+        self.assertEqual(cli._dir_bytes(self.home / "plain"), 7)
 
     def test_failure_is_a_clean_error(self) -> None:
         self.write_config()

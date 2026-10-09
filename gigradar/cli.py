@@ -21,13 +21,15 @@ import os
 import sys
 import threading
 import time
+import urllib.error
+import urllib.request
 from collections.abc import Callable, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TextIO
 
-from gigradar import appsetup, doctor, tgconnect
+from gigradar import appsetup, doctor, netutil, tgconnect, webview2
 from gigradar.config import ConfigError, Config, app_home, load_config, load_dotenv
 from gigradar.store import (StoreError, delete_label, filter_new, open_existing, open_store, recent_jobs, record_searches,
                             save_label, seen_count, stored_job)
@@ -38,11 +40,12 @@ from gigradar.tokens import StopRun
 EXIT_OK, EXIT_FAIL, EXIT_USAGE = 0, 1, 2
 LOG_RELATIVE = Path("logs") / "gigradar.log"
 BUSY_TIMEOUT = 10.0
-MODEL_BYTES_HINT = {"BAAI/bge-small-en-v1.5": 67_000_000}   # for a progress percentage; unknown models: None
+HEAD_TIMEOUT_S = 10.0
 PROGRESS_INTERVAL_S = 0.5
+MODEL_EXTRAS_BYTES = 1_000_000
 DEFAULT_TASK = "gigradar-watch"
 CHECK_ATTEMPTS = 3          # upwork-check: a fresh browser profile can still be settling its first Cloudflare check
-CHECK_PAUSE_S = 8.0
+CHECK_PAUSES_S = (2.0, 5.0)  # short backoff before attempt 2 and 3
 REDACTED = "<redacted>"
 
 
@@ -75,6 +78,8 @@ class Context:
     post: PostFn                      # Telegram transport
     sleep: Callable[[float], None]
     task_query: doctor.TaskQueryFn
+    webview2_version: Callable[[], str | None]   # installed WebView2 runtime version, None when missing
+    content_length: Callable[[str], int | None]  # size of a download (HEAD request), None when unknown
     secrets: list[str] = field(default_factory=list)   # values replaced by <redacted> in all output
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -98,7 +103,20 @@ def real_context() -> Context:
     home = app_home(environ, frozen, Path(__file__).resolve().parent.parent)
     return Context(environ=environ, home=home, stdin=sys.stdin, stdout=sys.stdout,
                    now=lambda: datetime.now(timezone.utc), post=urllib_post, sleep=time.sleep,
-                   task_query=doctor.schtasks_query)
+                   task_query=doctor.schtasks_query,
+                   webview2_version=lambda: webview2.installed_version(webview2.read_registry),
+                   content_length=head_content_length)
+
+
+def head_content_length(url: str) -> int | None:
+    """Content-Length of a URL via HEAD (redirects followed), or None when the server does not say."""
+    request = urllib.request.Request(url, method="HEAD")
+    try:
+        with netutil.urlopen(request, HEAD_TIMEOUT_S) as response:
+            size = response.headers.get("Content-Length")
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+    return int(size) if size and size.isdigit() else None
 
 
 # ---- helpers -------------------------------------------------------------------------------------
@@ -172,10 +190,15 @@ def cmd_telegram_connect(args: argparse.Namespace, ctx: Context) -> dict:
 
 
 def cmd_upwork_check(args: argparse.Namespace, ctx: Context) -> dict:
-    """One visible WebView2 window, ONE search (the first configured), seeded silently."""
+    """One visible WebView2 window, ONE search (the first configured), seeded silently.
+
+    Retries: a slow browser start (window_failed) opens a new window, a page that is not ready yet
+    ("fetch() gave no result") retries in the same window; each at most CHECK_ATTEMPTS times."""
     cfg, _ = load(args, ctx)
     if cfg.backend != "webview":
         raise CommandError("not_applicable", f"upwork-check opens the browser window of the webview backend; backend is {cfg.backend}")
+    if ctx.webview2_version() is None:       # before any window: pywebview would fall back to the IE engine
+        raise CommandError("webview2_missing", webview2.missing_message())
     from gigradar.notify import LogNotifier
     from webview.errors import WebViewException
 
@@ -185,22 +208,35 @@ def cmd_upwork_check(args: argparse.Namespace, ctx: Context) -> dict:
     spec = cfg.searches[0]
     ctx.emit({"event": "window", "message": "A window opens. If it shows a security check, solve it; it closes by itself."})
     searcher = WebViewSearcher(cfg.webview_profile, LogNotifier(), 1, visible=True)
+    attempts = {"window": 0, "fetch": 0}
 
     def work(search):
         # Same page, same window: the first fetch can land while Cloudflare's check is still navigating.
         for attempt in range(1, CHECK_ATTEMPTS + 1):
+            attempts["fetch"] += 1
             found, stopped = collect(search, [spec])
             if stopped is None or not isinstance(stopped, SearchBlocked) or attempt == CHECK_ATTEMPTS:
                 return found, stopped
-            ctx.emit({"event": "retry", "attempt": attempt + 1, "message": "the page is not ready yet; trying again"})
-            ctx.sleep(CHECK_PAUSE_S)
+            ctx.emit({"event": "retry", "kind": "fetch", "attempt": attempt + 1,
+                      "message": "the page is not ready yet; trying again"})
+            ctx.sleep(CHECK_PAUSES_S[attempt - 1])
 
-    try:
-        results, stopped = searcher.run(work)
-    except StopRun as exc:
-        raise CommandError("blocked", _redact(str(exc), ctx)) from None
-    except WebViewException as exc:   # WebView2 did not come up within pywebview's 20 s (a cold, busy PC)
-        raise CommandError("window_failed", f"the browser component was slow to start ({exc}); run the check again") from None
+    for window_try in range(1, CHECK_ATTEMPTS + 1):
+        attempts["window"] = window_try
+        try:
+            results, stopped = searcher.run(work)
+            break
+        except webview2.WebView2Missing as exc:
+            raise CommandError("webview2_missing", str(exc)) from None
+        except StopRun as exc:
+            raise CommandError("blocked", _redact(str(exc), ctx)) from None
+        except WebViewException as exc:   # WebView2 did not come up within pywebview's 20 s (a cold, busy PC)
+            if window_try == CHECK_ATTEMPTS:
+                raise CommandError("window_failed", f"the browser component was slow to start ({exc}); "
+                                   f"tried {window_try} times, run the check again") from None
+            ctx.emit({"event": "retry", "kind": "window", "attempt": window_try + 1,
+                      "message": "the browser component was slow to start; opening the window again"})
+            ctx.sleep(CHECK_PAUSES_S[window_try - 1])
     if stopped is not None:
         raise CommandError("blocked", _redact(str(stopped), ctx))
     [(_, jobs)] = results
@@ -212,7 +248,8 @@ def cmd_upwork_check(args: argparse.Namespace, ctx: Context) -> dict:
         total = seen_count(conn)
     finally:
         conn.close()
-    return {"search": spec.name, "jobs_found": len(jobs), "seeded": len(new), "jobs_seen_total": total}
+    return {"search": spec.name, "jobs_found": len(jobs), "seeded": len(new), "jobs_seen_total": total,
+            "attempts": attempts}
 
 
 def cmd_run_once(args: argparse.Namespace, ctx: Context) -> dict:
@@ -286,7 +323,8 @@ def cmd_doctor(args: argparse.Namespace, ctx: Context) -> dict:
         pass
     if env.get("TELEGRAM_BOT_TOKEN"):
         ctx.secrets.append(env["TELEGRAM_BOT_TOKEN"])
-    checks = doctor.run_checks(path, ctx.environ, ctx.post, ctx.task_query, args.task_name, not args.offline)
+    checks = doctor.run_checks(path, ctx.environ, ctx.post, ctx.task_query, args.task_name, not args.offline,
+                                 ctx.webview2_version)
     status = doctor.worst(checks)
     result = {"status": status, "checks": [asdict(c) for c in checks]}
     if status == doctor.FAIL:
@@ -296,10 +334,12 @@ def cmd_doctor(args: argparse.Namespace, ctx: Context) -> dict:
 
 def cmd_model_download(args: argparse.Namespace, ctx: Context) -> dict:
     cfg, _ = load(args, ctx)
-    from gigradar.embed import EmbedderError, FastEmbedder
+    from gigradar.embed import EmbedderError, FastEmbedder, model_file_url
 
     s = cfg.scoring
-    total = MODEL_BYTES_HINT.get(s.model)
+    url = model_file_url(s.model)
+    size = ctx.content_length(url) if url else None
+    total = size + MODEL_EXTRAS_BYTES if size else None     # the model file plus the small tokenizer/config files
     ctx.emit({"event": "start", "model": s.model, "dir": str(s.model_dir), "total_bytes": total})
     stop = threading.Event()
 
@@ -368,9 +408,13 @@ def cmd_selftest(args: argparse.Namespace, ctx: Context) -> dict:
 
 
 def _dir_bytes(path: Path) -> int:
+    """Bytes on disk. The Hugging Face cache keeps every file in blobs/ and links or copies it into
+    snapshots/ (a full second copy without symlinks), so count blobs/ only when it exists."""
     if not path.is_dir():
         return 0
-    return sum(f.stat().st_size for f in path.rglob("*") if f.is_file())
+    blobs = [b for b in path.rglob("blobs") if b.is_dir()]
+    roots = blobs if blobs else [path]
+    return sum(f.stat().st_size for root in roots for f in root.rglob("*") if f.is_file())
 
 
 # ---- plumbing ------------------------------------------------------------------------------------

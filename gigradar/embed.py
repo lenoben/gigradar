@@ -48,6 +48,16 @@ def preload_runtime() -> None:
         return  # fastembed not installed: FastEmbedder reports that when scoring actually needs it
 
 
+def model_file_url(model: str) -> str | None:
+    """Where fastembed downloads the model file from (to learn its size up front), or None if unknown."""
+    from fastembed import TextEmbedding
+
+    for entry in TextEmbedding.list_supported_models():
+        if entry["model"] == model and entry["sources"].get("hf"):
+            return f"https://huggingface.co/{entry['sources']['hf']}/resolve/main/{entry['model_file']}"
+    return None
+
+
 def normalize(vector: Sequence[float]) -> Vector:
     norm = math.sqrt(sum(x * x for x in vector))
     if norm == 0:

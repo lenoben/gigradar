@@ -32,14 +32,14 @@ The Telegram bot token is never printed or logged; whatever is printed has every
 |---|---|
 | `setup-apply --answers FILE\|- [--home DIR] [--force]` | Writes `gigradar.toml`, `.env`, `profile.md` from a JSON answers file (below). Validates with the real config loader first; refuses to overwrite without `--force`, which copies the old files to `backups/<UTC time>/` first. |
 | `telegram-connect [--chat-id ID]` | Reads the bot token from **stdin** (one line). `getMe`, finds the chat id from `getUpdates` (write the bot a message first), sends a test message. Returns `bot`, `chat_id`, `chat_name`; never the token. |
-| `upwork-check` | Opens the WebView2 window **visibly** once, runs the first search once, and marks what it found as seen (no alerts, no scoring). Solve Cloudflare's check if it shows; the window closes by itself. |
+| `upwork-check` | Opens the WebView2 window **visibly** once, runs the first search once, and marks what it found as seen (no alerts, no scoring). Solve Cloudflare's check if it shows; the window closes by itself. Needs the WebView2 runtime: without it the command stops at once with `webview2_missing` (message includes Microsoft's download link). A slow browser start (`window_failed`) opens a new window and a page that is not ready (`fetch() gave no result`) retries in the same window, each at most 3 times with a 2 s / 5 s pause; `retry` lines report it and the result has `attempts`. |
 | `run-once` | One watch run, exactly what the scheduled task does. Logs to `<home>/logs/gigradar.log`. |
 | `jobs [--limit N]` | The latest stored jobs with their embedding score, reason and your label. |
 | `label --job-id ID --value up\|down\|clear` | 👍 / 👎 / remove. |
-| `doctor [--offline] [--task-name NAME]` | `OK` / `WARN` / `FAIL` per check with a one-line `fix`: config, profile, Telegram token, Telegram API (`getMe`), chat id, WebView2 profile, model cached, store, scheduled task and its last result, recent `ERROR` log lines. `--offline` skips the network check. Exit 1 only on `FAIL`. |
+| `doctor [--offline] [--task-name NAME]` | `OK` / `WARN` / `FAIL` per check with a one-line `fix`: config, profile, Telegram token, Telegram API (`getMe`), chat id, WebView2 runtime (installed version, FAIL with the download link when missing), WebView2 profile folder, model cached, store, scheduled task and its last result, recent `ERROR` log lines (identical repeats collapse into one entry with a count; see `details`). `--offline` skips the network check. Exit 1 only on `FAIL`. |
 | `notify-test` | Sends one sample job through every configured channel (toast, Telegram): a "send a test" button. |
 | `selftest --order preload\|onnx-first\|toasts-first [--model-dir DIR]` | Checks the native-library load order scoring depends on; for packaged builds (see packaging.md). A crash is the answer, there is no JSON then. |
-| `model-download` | Downloads the scoring model (about 67 MB), then checks it loads offline. Progress lines: `start`, `progress` (`bytes`, `total_bytes`, `percent`), `verify`. |
+| `model-download` | Downloads the scoring model (about 67 MB; the total comes from the server's Content-Length, no percentage if unknown), then checks it loads offline. Progress lines: `start`, `progress` (`bytes`, `total_bytes`, `percent`), `verify`. |
 
 ### Answers file (`setup-apply`)
 

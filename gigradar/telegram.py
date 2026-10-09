@@ -23,6 +23,7 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 
+from gigradar import netutil
 from gigradar.jobfields import format_money, parse_amount
 from gigradar.notify import Alert, score_text
 from gigradar.score import Score
@@ -52,7 +53,7 @@ def urllib_post(url: str, body: bytes) -> tuple[int, bytes]:
     request = urllib.request.Request(url, data=body, method="POST",
                                      headers={"Content-Type": "application/x-www-form-urlencoded"})
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+        with netutil.urlopen(request, TIMEOUT_S) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()

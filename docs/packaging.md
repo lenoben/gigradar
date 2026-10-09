@@ -60,16 +60,37 @@ imports every collected package in isolated child processes, winrt before onnxru
    `setup-apply` and `telegram-connect` strip it.
 4. `upwork-check` on a cold browser profile: one attempt got "fetch() gave no result within 30s" (the page was
    still navigating through Cloudflare's check), another "Main window failed to start" (WebView2 slow on a busy
-   PC). Now: three attempts in the same window, 8 s apart; a window that does not start returns the error code
-   `window_failed` so the UI can offer a retry. Without these, two of four cold-profile attempts passed on the
-   first go (never a click needed).
+   PC). Now: a page that is not ready is retried in the same window and a window that does not start is opened
+   again, each at most 3 times with a 2 s / 5 s pause; the result reports `attempts`. If it still fails the
+   error code is `window_failed`. In a fresh Windows Sandbox the first fetch needed a retry (Cloudflare's click
+   check was shown, the user solved it) and the second attempt passed.
 5. A windowless exe returns at once in PowerShell: tests must use `Start-Process -Wait`.
-6. Windows Sandbox was not available on the test PC (the feature is off; enabling it needs administrator rights
-   and a reboot), and a fresh Windows user needs administrator rights too. The clean-machine test was therefore
-   approximated: the folder copied elsewhere, PATH reduced to the Windows folders (no Python), a new app home
-   and a new WebView2 profile. Not covered: a PC without the Visual C++ runtime or the WebView2 runtime,
-   SmartScreen and antivirus reaction to an unsigned exe, a different CPU. `sandbox-test.ps1` runs the same
-   steps (`smoke.ps1`) in Windows Sandbox once it is enabled; it has not been run.
+6. **WebView2 runtime missing** (found in Windows Sandbox, which has Edge but no WebView2 runtime): pywebview
+   silently falls back to the Internet Explorer engine, which has no cookie access, so `upwork-check` failed
+   after 33 s and `run-once` looped for 333 s writing 298 `ERROR` lines. Now the backend is forced to
+   `edgechromium`, and `gigradar/webview2.py` reads the runtime version from the registry before any window is
+   created: `upwork-check` fails in about 2 s with `webview2_missing` and Microsoft's Evergreen link, a scheduled
+   run stops with exit 75 and one log line, and `doctor` has a separate `webview2_runtime` check (FAIL + link).
+   The Tauri installer must install the runtime itself (`webviewInstallMode`).
+7. The `model-download` size hint was hardcoded and wrong, and the Hugging Face cache holds two copies of the
+   file on Windows (134 MB counted). The total now comes from the server's Content-Length and the cache's
+   `blobs` folder is counted once. A fresh Windows lacked a root certificate for Python's default trust store,
+   so every standard-library HTTPS call (Telegram, the size lookup; `gigradar/netutil.py`) retries once with the
+   certifi bundle after a certificate error. The other HTTPS callers bring their own CA bundle: the model
+   download (`huggingface_hub`, which worked in the sandbox) and the curl backend (`curl_cffi`). Tested with a
+   local HTTPS server whose CA only the certifi stand-in knows (`tests/test_netutil.py`).
+
+## Windows Sandbox results
+
+`sandbox-test.ps1` runs `smoke.ps1` in two fresh sandboxes (Windows 11, no Python on PATH):
+
+| Scenario | Result |
+|---|---|
+| without WebView2 | `doctor` FAIL with the link; `upwork-check` `webview2_missing` in 2.5 s; `run-once` exit 75 in 3.8 s with 1 log line. 0 failed checks |
+| after installing the Evergreen bootstrapper | download 1.9 MB in 8 s, silent install 90 s; `model-download` 15 s; toast test; `upwork-check` ok (1 window, 2 fetch attempts, 63 s including the click check); `run-once` ok 20 s; windowless exe ok 18 s. 0 failed checks |
+
+Nothing about SmartScreen, a missing Visual C++ runtime or antivirus showed up in the logs. Not covered by a
+real second PC: other CPUs, third-party antivirus.
 
 ## Not done
 

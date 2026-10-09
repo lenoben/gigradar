@@ -9,6 +9,7 @@ from __future__ import annotations
 import csv
 import io
 import re
+from collections import Counter
 import subprocess
 import sys
 from collections.abc import Callable, Mapping
@@ -19,6 +20,7 @@ from gigradar.config import Config, ConfigError, load_config, load_dotenv
 from gigradar.store import StoreError, open_existing, seen_count
 from gigradar.telegram import PostFn
 from gigradar.tgconnect import ConnectError, get_me
+from gigradar.webview2 import EVERGREEN_URL
 
 OK, WARN, FAIL = "OK", "WARN", "FAIL"
 TASK_FOLDER = "\\gigradar\\"
@@ -27,6 +29,8 @@ ERROR_CHARS = 200
 RESULT_MEANING = {75: "stopped early (Upwork check not passed); retried at the next run"}
 NOT_YET_RUN, RUNNING = 267011, 267009
 ERROR_LINE = re.compile(r"\sERROR\s")
+LOG_STAMP = re.compile(r"^\d{4}-\d\d-\d\d \d\d:\d\d:\d\d,\d+ ")
+ERROR_ENTRIES = 5
 
 # (task name) -> csv text of `schtasks /query /v /fo csv`, or None when the task does not exist
 TaskQueryFn = Callable[[str], str | None]
@@ -38,6 +42,7 @@ class Check:
     status: str
     message: str
     fix: str | None
+    details: tuple[str, ...] = ()
 
 
 def ok(name: str, message: str) -> Check:
@@ -53,7 +58,7 @@ def schtasks_query(task_name: str) -> str | None:
 
 
 def run_checks(config_path: Path, environ: Mapping[str, str], post: PostFn, task_query: TaskQueryFn,
-               task_name: str, network: bool) -> list[Check]:
+               task_name: str, network: bool, webview2_version: Callable[[], str | None]) -> list[Check]:
     env = dict(environ)
     try:
         load_dotenv(config_path.parent / ".env", env)
@@ -68,6 +73,7 @@ def run_checks(config_path: Path, environ: Mapping[str, str], post: PostFn, task
     checks = [ok("config", f"{config_path} ({len(cfg.searches)} searches)")]
     checks.append(_profile(cfg))
     checks.extend(_telegram(cfg, env, post, network))
+    checks.append(_webview2(cfg, webview2_version))
     checks.append(_webview(cfg))
     checks.append(_model(cfg))
     checks.append(_store(cfg))
@@ -111,6 +117,16 @@ def _telegram(cfg: Config, env: Mapping[str, str], post: PostFn, network: bool) 
                   Check("telegram_chat", FAIL, "TELEGRAM_CHAT_ID is not set",
                         "run telegram-connect and the setup again"))
     return checks
+
+
+def _webview2(cfg: Config, version: Callable[[], str | None]) -> Check:
+    if cfg.backend != "webview":
+        return ok("webview2_runtime", f"backend is {cfg.backend}")
+    installed = version()
+    if installed is None:
+        return Check("webview2_runtime", FAIL, "the Microsoft Edge WebView2 runtime is not installed",
+                     f"install it (free, about 2 minutes): {EVERGREEN_URL}")
+    return ok("webview2_runtime", f"WebView2 runtime {installed}")
 
 
 def _webview(cfg: Config) -> Check:
@@ -175,11 +191,18 @@ def _log_errors(log_file: Path, env: Mapping[str, str]) -> Check:
     if not log_file.is_file():
         return ok("recent_errors", "no log yet")
     lines = log_file.read_text(encoding="utf-8", errors="replace").splitlines()[-LOG_TAIL_LINES:]
-    errors = [line for line in lines if ERROR_LINE.search(line)]
+    errors = [_scrub(LOG_STAMP.sub("", line), env) for line in lines if ERROR_LINE.search(line)]
     if not errors:
         return ok("recent_errors", f"no ERROR in the last {len(lines)} log lines")
-    return Check("recent_errors", WARN, f"{len(errors)} ERROR lines; latest: {_scrub(errors[-1], env)[:ERROR_CHARS]}",
-                 f"read {log_file}")
+    # the same error repeated many times (a retry loop) is one entry with a count, newest first
+    counts = Counter(errors)
+    distinct = list(dict.fromkeys(reversed(errors)))
+    details = tuple(f"{counts[e]}x {e[:ERROR_CHARS]}" if counts[e] > 1 else e[:ERROR_CHARS]
+                    for e in distinct[:ERROR_ENTRIES])
+    more = f" (+{len(distinct) - ERROR_ENTRIES} more)" if len(distinct) > ERROR_ENTRIES else ""
+    return Check("recent_errors", WARN,
+                 f"{len(errors)} ERROR lines, {len(distinct)} distinct{more}; latest: {details[0]}",
+                 f"read {log_file}", details)
 
 
 def worst(checks: list[Check]) -> str:

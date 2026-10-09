@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Protocol, TypeVar
 
 import upwork_search
+from gigradar import webview2
 from gigradar.config import ConfigError, SearchSpec
 from gigradar.notify import Notifier
 from gigradar.search import SearchBlocked, SearchFn
@@ -187,6 +188,8 @@ class WebViewSearcher:
     def run(self, work: Callable[[SearchFn], T]) -> T:
         import webview
 
+        webview2.require(webview2.read_registry)   # fail fast: without the runtime pywebview would fall back to IE
+        webview.windows.clear()                    # a window left over from a failed start would be picked first
         self.profile_dir.mkdir(parents=True, exist_ok=True)
         box: dict[str, object] = {}
         window = webview.create_window("gigradar", upwork_search.UPWORK_HOME, width=1100, height=800,
@@ -209,7 +212,7 @@ class WebViewSearcher:
         timer.daemon = True
         timer.start()
         try:
-            webview.start(session, private_mode=False, storage_path=str(self.profile_dir))
+            webview.start(session, gui="edgechromium", private_mode=False, storage_path=str(self.profile_dir))
         finally:
             timer.cancel()
         if "error" in box:
