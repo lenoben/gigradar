@@ -1,0 +1,95 @@
+# gigradar config — copy to gigradar.toml (gitignored) and edit.
+# NO SECRETS HERE: Telegram bot token/chat id and the proxy URL go in .env
+# (see .env.example). gigradar refuses to start if this file contains them.
+
+[store]
+# SQLite file for seen-job dedup; relative paths resolve against this file's folder.
+path = "data/gigradar.db"
+
+[defaults]
+# Jobs fetched per search per run (1..50 = one request per search). Personal volume only.
+limit = 30
+
+[search]
+# How searches reach Upwork:
+#   "webview" = inside a hidden WebView2 page (needs: pip install -r requirements-webview.txt).
+#               Works from a home IP that Cloudflare challenges; the first run may show the
+#               window once so you can click the checkbox.
+#   "curl"    = plain curl_cffi requests (only works un-challenged, e.g. via use_proxy below).
+backend = "webview"
+# WebView2 profile (cookies incl. Cloudflare clearance). Default: %LOCALAPPDATA%\gigradar\webview2
+# webview_profile = "D:/somewhere/else"
+
+[notify]
+# Where new jobs and "click needed" messages go (the log always gets them):
+#   "toast"    = Windows toast with a short summary (needs: pip install -r requirements-toast.txt)
+#   "telegram" = a brief per job, or one digest if a run finds more than 5
+#                (needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env; test: python -m gigradar.telegram --test)
+channels = ["toast"]
+
+[token]
+# curl backend only. Where the Upwork visitor token comes from, tried in order:
+#   "manual" = a token you pasted into .token_cache.json (real cookie expiry if recorded, else ~20 min)
+#   "fetch"  = fetch from the Upwork homepage (fails if Cloudflare challenges your IP)
+sources = ["manual", "fetch"]
+# Route token fetch + searches through UPWORK_PROXY (set in .env).
+use_proxy = false
+
+# Job scoring against your profile. Uncomment [profile] to enable it; without it, no scoring.
+# [profile]
+# # Skill areas as free text, one "## Heading" per area (copy profile.example.md).
+# # Relative paths resolve against this file's folder. Missing file = config error.
+# path = "profile.md"
+# # Job skills you have; each one the job also lists raises its score.
+# skills = ["Rust", "Go", "PostgreSQL", "Next.js", "TypeScript", "Python"]
+# # Hard rules: a job failing one scores 0. A job without rate/budget data passes.
+# min_hourly = 50         # USD; hourly jobs whose max rate is below this
+# min_fixed = 1000        # USD; fixed jobs whose budget is below this
+# tiers = ["intermediate", "expert"]   # allowed tiers; omit or [] = any
+# exclude_keywords = ["WordPress", "unpaid test"]   # in title or skills (not the description)
+# # Free text about where/when/how you can work (location, time zone, on-site, languages). Only
+# # Claude's scoring rubric reads it (via the MCP server); a job that needs what you cannot offer
+# # scores at most 10 there. Personal: keep it in this gitignored file.
+# constraints = "e.g. Remote only; based in <country> (<time zone>); no on-site work"
+
+# Scoring settings (all optional; shown with their defaults). Needs: pip install -r requirements-scoring.txt
+# and the model downloaded once: python -m gigradar.embed --download
+# [scoring]
+# model = "BAAI/bge-small-en-v1.5"   # fastembed model, ~67 MB
+# # model_dir = "D:/somewhere"       # default: %LOCALAPPDATA%\gigradar\models
+# weights = { semantic = 0.7, skills = 0.3 }
+# # Best-section cosine at/below cos_low = semantic 0, at/above cos_high = semantic 100.
+# # Calibrate with: python -m gigradar.score --dry-run
+# cos_low = 0.45
+# cos_high = 0.80
+# skill_saturation = 3               # this many matched skills = full skill score
+# # A job listing skills of which none match: "zero" = skill score 0, "unknown" = semantic part only.
+# zero_skill_match = "zero"
+# # max_words = 200                  # embed only the first N words (faster); default: whole text
+# # Jobs scoring below this are stored and marked seen but not alerted. 0 = alert everything.
+# # Pick it from your labels: python -m gigradar.label, then python -m gigradar.label --eval
+# min_score = 0
+
+# One [[searches]] block per saved search. Only `name` is required.
+# Allowed values (same as the upwork_search.py CLI):
+#   job_type:     hourly | fixed | weekly_retainer
+#   tier:         entry | intermediate | expert
+#   workload:     part_time | full_time | as_needed
+#   duration:     ongoing | week | month | semester
+#   client_hires: 0 | 1-9 | 10-
+#   hourly_rate:  "MIN-MAX", e.g. "50-100" (implies hourly)
+#   fixed_budget: "MIN-MAX" or "5000-"      (implies fixed)
+#   location:     exact country name, e.g. "United States" (not "US")
+#   contract_to_hire: true
+#   limit:        overrides [defaults].limit
+
+[[searches]]
+name = "python-expert-hourly"
+query = "python"
+tier = "expert"
+hourly_rate = "50-150"
+
+[[searches]]
+name = "nextjs-fixed"
+query = "next.js"
+fixed_budget = "1000-"

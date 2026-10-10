@@ -9,12 +9,13 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import path from "node:path";
 import type { JobResult, SearchFilters } from "@/lib/types";
+import { venvPython } from "@/lib/venvPython.mjs";
 
 const execFileAsync = promisify(execFile);
 
 // The Next dev server's cwd is <repoRoot>/web, so the repo root is one level up.
 const ROOT = path.resolve(process.cwd(), "..");
-const PYTHON = path.join(ROOT, ".venv", "bin", "python");
+const PYTHON = venvPython(ROOT, process.platform, process.env.UPWORK_PYTHON);
 const SCRIPT = path.join(ROOT, "upwork_search.py");
 
 const LIMIT_DEFAULT = 30;
@@ -36,7 +37,10 @@ function buildArgs(filters: SearchFilters, offset: number): string[] {
   if (filters.hourlyRate) args.push("--hourly-rate", filters.hourlyRate);
   if (filters.fixedBudget) args.push("--fixed-budget", filters.fixedBudget);
   if (filters.location) args.push("--location", filters.location);
-  const limit = Math.min(LIMIT_MAX, Math.max(LIMIT_MIN, filters.limit ?? LIMIT_DEFAULT));
+  const limit = Math.min(
+    LIMIT_MAX,
+    Math.max(LIMIT_MIN, filters.limit ?? LIMIT_DEFAULT),
+  );
   args.push("--limit", String(limit));
   args.push("--offset", String(Math.max(0, Math.floor(offset))));
   args.push("--meta"); // {total, offset, count, jobs} so the UI can paginate
@@ -51,7 +55,10 @@ function buildArgs(filters: SearchFilters, offset: number): string[] {
 /** Read the last few stderr lines for an error message (stderr also carries
  * benign token-fetch warnings, so we keep the tail rather than the whole thing). */
 function stderrTail(err: unknown): string {
-  const stderr = typeof err === "object" && err !== null && "stderr" in err ? String((err as { stderr: unknown }).stderr) : "";
+  const stderr =
+    typeof err === "object" && err !== null && "stderr" in err
+      ? String((err as { stderr: unknown }).stderr)
+      : "";
   return stderr.trim().split("\n").slice(-6).join(" | ");
 }
 
@@ -60,17 +67,25 @@ function stderrTail(err: unknown): string {
  * full result `total` Upwork reports (for pagination).
  * @throws Error (with the stderr tail) on nonzero exit, timeout, or unparseable output.
  */
-export async function runSearch(filters: SearchFilters, offset: number): Promise<{ jobs: JobResult[]; total: number }> {
+export async function runSearch(
+  filters: SearchFilters,
+  offset: number,
+): Promise<{ jobs: JobResult[]; total: number }> {
   const args = [SCRIPT, ...buildArgs(filters, offset)];
 
   let stdout: string;
   try {
-    const result = await execFileAsync(PYTHON, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: MAX_BUFFER });
+    const result = await execFileAsync(PYTHON, args, {
+      timeout: EXEC_TIMEOUT_MS,
+      maxBuffer: MAX_BUFFER,
+    });
     stdout = result.stdout;
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     const tail = stderrTail(err);
-    throw new Error(`upwork_search.py failed (${message})${tail ? ` — stderr: ${tail}` : ""}`);
+    throw new Error(
+      `upwork_search.py failed (${message})${tail ? ` — stderr: ${tail}` : ""}`,
+    );
   }
 
   let parsed: unknown;
@@ -78,11 +93,19 @@ export async function runSearch(filters: SearchFilters, offset: number): Promise
     parsed = JSON.parse(stdout);
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
-    throw new Error(`could not parse upwork_search.py JSON output (${message}) — output head: ${stdout.slice(0, 300)}`);
+    throw new Error(
+      `could not parse upwork_search.py JSON output (${message}) — output head: ${stdout.slice(0, 300)}`,
+    );
   }
   // With --meta the tool emits { total, offset, count, jobs }.
-  if (typeof parsed !== "object" || parsed === null || !Array.isArray((parsed as { jobs?: unknown }).jobs)) {
-    throw new Error(`upwork_search.py returned unexpected JSON: ${stdout.slice(0, 300)}`);
+  if (
+    typeof parsed !== "object" ||
+    parsed === null ||
+    !Array.isArray((parsed as { jobs?: unknown }).jobs)
+  ) {
+    throw new Error(
+      `upwork_search.py returned unexpected JSON: ${stdout.slice(0, 300)}`,
+    );
   }
   const obj = parsed as { total?: unknown; jobs: JobResult[] };
   const total = typeof obj.total === "number" ? obj.total : obj.jobs.length;

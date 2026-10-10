@@ -1,0 +1,3 @@
+# Optional: local job scoring with embeddings (python -m gigradar.embed --download fetches the model once).
+# fastembed = ONNX runtime, no PyTorch. 0.9.0 exists (2026-10-07) but stays unpinned until re-checked.
+fastembed==0.8.1

@@ -12,13 +12,14 @@ import { promisify } from "node:util";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { venvPython } from "../src/lib/venvPython.mjs";
 
 const execFileAsync = promisify(execFile);
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIR = path.resolve(SCRIPT_DIR, "..");
 const ROOT = path.resolve(WEB_DIR, "..");
-const PYTHON = path.join(ROOT, ".venv", "bin", "python");
+const PYTHON = venvPython(ROOT, process.platform, process.env.UPWORK_PYTHON);
 const SEARCH_SCRIPT = path.join(ROOT, "upwork_search.py");
 const STORE = path.join(WEB_DIR, "data", "subscriptions.jsonl");
 
@@ -41,7 +42,10 @@ function loadEnv(file) {
     if (eq === -1) continue;
     const key = trimmed.slice(0, eq).trim();
     let val = trimmed.slice(eq + 1).trim();
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+    if (
+      (val.startsWith('"') && val.endsWith('"')) ||
+      (val.startsWith("'") && val.endsWith("'"))
+    ) {
       val = val.slice(1, -1);
     }
     if (!(key in process.env)) process.env[key] = val;
@@ -68,12 +72,17 @@ function buildArgs(filters) {
 }
 
 async function runSearch(filters) {
-  const { stdout } = await execFileAsync(PYTHON, [SEARCH_SCRIPT, ...buildArgs(filters)], {
-    timeout: EXEC_TIMEOUT_MS,
-    maxBuffer: MAX_BUFFER,
-  });
+  const { stdout } = await execFileAsync(
+    PYTHON,
+    [SEARCH_SCRIPT, ...buildArgs(filters)],
+    {
+      timeout: EXEC_TIMEOUT_MS,
+      maxBuffer: MAX_BUFFER,
+    },
+  );
   const parsed = JSON.parse(stdout);
-  if (!Array.isArray(parsed)) throw new Error("upwork_search.py returned non-array JSON");
+  if (!Array.isArray(parsed))
+    throw new Error("upwork_search.py returned non-array JSON");
   return parsed;
 }
 
@@ -92,7 +101,13 @@ function jobCardHtml(job) {
       : job.fixed_budget
         ? `$${esc(job.fixed_budget)} fixed`
         : "";
-  const meta = [job.tier ? esc(job.tier) : "", job.job_type ? esc(job.job_type) : "", rate].filter(Boolean).join(" · ");
+  const meta = [
+    job.tier ? esc(job.tier) : "",
+    job.job_type ? esc(job.job_type) : "",
+    rate,
+  ]
+    .filter(Boolean)
+    .join(" · ");
   const collapsed = (job.description || "").trim().replace(/\s+/g, " ");
   const snippet = collapsed.slice(0, SNIPPET_LEN);
   return `
@@ -120,7 +135,10 @@ function alertHtml(jobs) {
 async function sendAlert(apiKey, from, to, jobs) {
   const resp = await fetch(RESEND_ENDPOINT, {
     method: "POST",
-    headers: { Authorization: `Bearer ${apiKey}`, "Content-Type": "application/json" },
+    headers: {
+      Authorization: `Bearer ${apiKey}`,
+      "Content-Type": "application/json",
+    },
     body: JSON.stringify({
       from,
       to,
@@ -129,7 +147,9 @@ async function sendAlert(apiKey, from, to, jobs) {
     }),
   });
   if (!resp.ok) {
-    throw new Error(`Resend API ${resp.status}: ${(await resp.text()).slice(0, 300)}`);
+    throw new Error(
+      `Resend API ${resp.status}: ${(await resp.text()).slice(0, 300)}`,
+    );
   }
   return resp.json();
 }
@@ -143,7 +163,11 @@ function loadSubscriptions() {
 }
 
 function writeSubscriptions(subscriptions) {
-  writeFileSync(STORE, subscriptions.map((s) => JSON.stringify(s)).join("\n") + "\n", "utf8");
+  writeFileSync(
+    STORE,
+    subscriptions.map((s) => JSON.stringify(s)).join("\n") + "\n",
+    "utf8",
+  );
 }
 
 async function main() {
@@ -173,7 +197,9 @@ async function main() {
       if (!sub.seenUrls || sub.seenUrls.length === 0) {
         sub.seenUrls = jobs.map((j) => j.url).filter(Boolean);
         changed = true;
-        console.log(`[notify] ${sub.email}: seeded ${sub.seenUrls.length} current jobs (first run, no email)`);
+        console.log(
+          `[notify] ${sub.email}: seeded ${sub.seenUrls.length} current jobs (first run, no email)`,
+        );
         continue;
       }
       const seen = new Set(sub.seenUrls);
@@ -186,12 +212,19 @@ async function main() {
       // Only record as seen after a successful send, so a failed email retries.
       // Current (most recent) URLs first, then prior history, deduped and capped.
       sub.seenUrls = Array.from(
-        new Set([...jobs.map((j) => j.url).filter(Boolean), ...(sub.seenUrls ?? [])]),
+        new Set([
+          ...jobs.map((j) => j.url).filter(Boolean),
+          ...(sub.seenUrls ?? []),
+        ]),
       ).slice(0, SEEN_CAP);
       changed = true;
-      console.log(`[notify] ${sub.email}: ${newJobs.length} new of ${jobs.length} matched -> emailed`);
+      console.log(
+        `[notify] ${sub.email}: ${newJobs.length} new of ${jobs.length} matched -> emailed`,
+      );
     } catch (err) {
-      console.error(`[notify] ${sub.email}: FAILED — ${err instanceof Error ? err.message : String(err)}`);
+      console.error(
+        `[notify] ${sub.email}: FAILED — ${err instanceof Error ? err.message : String(err)}`,
+      );
     }
   }
 
@@ -199,6 +232,8 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(`[notify] fatal: ${err instanceof Error ? err.stack : String(err)}`);
+  console.error(
+    `[notify] fatal: ${err instanceof Error ? err.stack : String(err)}`,
+  );
   process.exit(1);
 });

@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
 Search Upwork jobs from the command line with full filters — **no login, no browser, no API key**.
-A single Python script that talks to Upwork's public *visitor* GraphQL API and returns clean
+A single Python script that talks to Upwork's public _visitor_ GraphQL API and returns clean
 JSON or CSV.
 
 ```bash
@@ -23,6 +23,13 @@ pagination, email job alerts, and AI-drafted proposals — see [Web UI](#web-ui)
 > single residential IP gets rate-limited under sustained scraping. To run it on a server, point it
 > at a **rotating residential proxy** (e.g. [Webshare](https://www.webshare.io), which has a free
 > tier) via `--proxy` (CLI) or the `UPWORK_PROXY` env (web). See [Caveats](#caveats).
+
+## Gigradar: a watcher for new jobs (optional add-on)
+
+This repository also contains **Gigradar**, an optional add-on built on `upwork_search.py`: it runs your searches on a
+schedule on your own PC, scores every new job against your profile with a small local embedding model, and notifies
+you (Windows toast, optional Telegram). Nothing above needs it. Setup: copy `gigradar.example.toml` to
+`gigradar.toml`, then see [docs/windows-scheduler.md](docs/windows-scheduler.md) for scheduling.
 
 ## How it works
 
@@ -114,7 +121,7 @@ RESEND_FROM="Jobs <alerts@yourdomain.com>"    # a VERIFIED Resend sender (defaul
 - **Search + filters** — query bar and a filters sheet (job type, tier, workload, length, client
   hires, client location, hourly/fixed budget, contract-to-hire); "load more" up to Upwork's
   ~5000-result cap. Backed by `POST /api/search`.
-- **AI proposal drafter** — the ⚙ settings gear (top-right) takes *your own* [OpenRouter](https://openrouter.ai)
+- **AI proposal drafter** — the ⚙ settings gear (top-right) takes _your own_ [OpenRouter](https://openrouter.ai)
   key (BYOK) + a short profile. Each job card's **"Draft proposal"** button then streams a tailored
   cover letter from the job description + your profile. Fully client-side — your key stays in your
   browser and goes straight to OpenRouter, never through the server. Drafts only (paste into Upwork;
@@ -146,30 +153,30 @@ docker run -p 3000:3000 \
 
 **Mount a volume on `/app/web/data`** or subscriptions are wiped whenever the container is replaced
 (the container filesystem is ephemeral). For alerts, run `node scripts/notify.mjs` on a schedule
-*inside* the container — a Coolify "Scheduled Task", or a host cron doing `docker exec <container> node scripts/notify.mjs`.
+_inside_ the container — a Coolify "Scheduled Task", or a host cron doing `docker exec <container> node scripts/notify.mjs`.
 
 ## Filters
 
-| Flag | Values | Notes |
-|---|---|---|
-| `-q`, `--query` | any text | keyword; omit for all recent jobs |
-| `--job-type` | `hourly` `fixed` `weekly_retainer` | |
-| `--tier` | `entry` `intermediate` `expert` | experience level |
-| `--workload` | `part_time` `full_time` `as_needed` | |
-| `--duration` | `ongoing` `week` `month` `semester` | project length |
-| `--client-hires` | `0` `1-9` `10-` | client's past hires |
-| `--location` | exact country name, e.g. `"United States"` | client location (`"US"`/`"USA"` don't work) |
-| `--contract-to-hire` | (flag) | only contract-to-hire jobs |
-| `--hourly-rate` | `MIN-MAX` e.g. `25-50` | auto-applies `--job-type hourly` |
-| `--fixed-budget` | `MIN-MAX` e.g. `1000-4999`, or `5000-` | auto-applies `--job-type fixed` |
-| `--sort` | `recency` (default) | reorders only |
-| `--limit` | integer (default 50) | ceiling ~5000 |
-| `--format` | `json` (default) `csv` | |
-| `--out` | file path | default: stdout |
-| `--proxy` | `http://user:pass@host:port` | recommended (see Caveats) |
+| Flag                 | Values                                     | Notes                                       |
+| -------------------- | ------------------------------------------ | ------------------------------------------- |
+| `-q`, `--query`      | any text                                   | keyword; omit for all recent jobs           |
+| `--job-type`         | `hourly` `fixed` `weekly_retainer`         |                                             |
+| `--tier`             | `entry` `intermediate` `expert`            | experience level                            |
+| `--workload`         | `part_time` `full_time` `as_needed`        |                                             |
+| `--duration`         | `ongoing` `week` `month` `semester`        | project length                              |
+| `--client-hires`     | `0` `1-9` `10-`                            | client's past hires                         |
+| `--location`         | exact country name, e.g. `"United States"` | client location (`"US"`/`"USA"` don't work) |
+| `--contract-to-hire` | (flag)                                     | only contract-to-hire jobs                  |
+| `--hourly-rate`      | `MIN-MAX` e.g. `25-50`                     | auto-applies `--job-type hourly`            |
+| `--fixed-budget`     | `MIN-MAX` e.g. `1000-4999`, or `5000-`     | auto-applies `--job-type fixed`             |
+| `--sort`             | `recency` (default)                        | reorders only                               |
+| `--limit`            | integer (default 50)                       | ceiling ~5000                               |
+| `--format`           | `json` (default) `csv`                     |                                             |
+| `--out`              | file path                                  | default: stdout                             |
+| `--proxy`            | `http://user:pass@host:port`               | recommended (see Caveats)                   |
 
-> **Budget/rate note:** on Upwork, `--fixed-budget` filters *fixed-price* jobs and `--hourly-rate`
-> filters *hourly* jobs — so the tool automatically pins the matching job type. Don't combine
+> **Budget/rate note:** on Upwork, `--fixed-budget` filters _fixed-price_ jobs and `--hourly-rate`
+> filters _hourly_ jobs — so the tool automatically pins the matching job type. Don't combine
 > `--fixed-budget` with `--job-type hourly` (or vice-versa); it will refuse.
 
 ## Output
@@ -206,7 +213,7 @@ and **freelancer-location targeting**. Requesting any of them makes the API reje
 so the tool doesn't. The job **detail page** (`/jobs/~…`) is also hard-blocked by Cloudflare, so
 there's no HTML fallback for that extra data — it genuinely needs an account.
 
-> Note: `--location` filters by client location even though the client's country can't be *read back*
+> Note: `--location` filters by client location even though the client's country can't be _read back_
 > without an account. The filter works server-side; you just don't see the country field in results.
 
 ## Caveats
@@ -238,7 +245,7 @@ All optional — the tool is complete as-is. Ordered by value (adoption verified
 3. **`sqlite3` (stdlib) — persistence.** A local store + dedup for the `--watch`/cron mode above; no
    dependency needed.
 4. **Analysis at volume — [DuckDB](https://duckdb.org/) (39.7k★) or [`polars`](https://pola.rs/)
-   (39.1k★, 64M/mo).** DuckDB can run SQL *directly over the output file*
+   (39.1k★, 64M/mo).** DuckDB can run SQL _directly over the output file_
    (`SELECT ... FROM 'jobs.jsonl'`) with no load step — best for dedup/filter/export. `polars` if you
    prefer DataFrames. Both lighter/faster than pandas.
 5. **Schema safety — [`msgspec`](https://github.com/jcrist/msgspec) (recommended, 3.9k★) or
@@ -256,7 +263,7 @@ All optional — the tool is complete as-is. Ordered by value (adoption verified
    different fingerprint stack than `curl_cffi`. (`tls-client`/`hrequests` are both stale — not
    worth it.)
 
-**Deliberately *not* recommended:** Scrapy (overkill for one endpoint), Selenium/Playwright
+**Deliberately _not_ recommended:** Scrapy (overkill for one endpoint), Selenium/Playwright
 (defeats the no-browser design), captcha solvers (not needed for passive TLS bypass), `httpx`
 (no TLS impersonation, so it can't replace `curl_cffi` here).
 

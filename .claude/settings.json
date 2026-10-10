@@ -1,0 +1,15 @@
+{
+  "permissions": {
+    "deny": [
+      "Read(./node_modules/**)",
+      "Read(./web/node_modules/**)",
+      "Read(./.venv/**)",
+      "Read(./.next/**)",
+      "Read(./web/.next/**)",
+      "Read(./web/data/**)",
+      "Read(./.token_cache.json)",
+      "Read(./**/.env)",
+      "Read(./**/.env.*)"
+    ]
+  }
+}
