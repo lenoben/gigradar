@@ -8,7 +8,7 @@ import urllib.parse
 from gigradar.notify import SCORE_CHARS, Alert
 from gigradar.score import Score
 from gigradar.telegram import (DIGEST_THRESHOLD, MAX_CHARS, SEND_PAUSE_S, TelegramError, TelegramNotifier,
-                               _sample_alert, format_brief, format_digest, pay_line)
+                               sample_alert, format_brief, format_digest, pay_line)
 from upwork_search import Job
 
 TOKEN = "123456:SECRET-token_value"
@@ -90,9 +90,9 @@ class FormatTest(unittest.TestCase):
 
     def test_digest_splits_on_lines_within_limit(self) -> None:
         jobs = [alert(f"~{i:03d}", title=f"Job {i} " + "x" * 150) for i in range(60)]
-        messages = format_digest(jobs)
+        messages = format_digest(jobs, 0)
         self.assertGreater(len(messages), 1)
-        self.assertTrue(messages[0].startswith("<b>gigradar: 60 new jobs</b>"))
+        self.assertTrue(messages[0].startswith("<b>Gigradar: 60 new jobs</b>"))
         for message in messages:
             self.assertLessEqual(len(message), MAX_CHARS)
             self.assertTrue(balanced(message))
@@ -123,15 +123,15 @@ class FormatTest(unittest.TestCase):
 
     def test_digest_shows_scores_in_given_order(self) -> None:
         alerts = [alert("~1", score(90, "a")), alert("~2", score(40, "b")), alert("~3", None, job_type=None, tier=None)]
-        [message] = format_digest(alerts)
+        [message] = format_digest(alerts, 0)
         lines = message.split("\n")
         self.assertTrue(lines[1].startswith('• <b>90</b> <a href="https://www.upwork.com/jobs/~1">'))
         self.assertTrue(lines[2].startswith('• <b>40</b> <a href="https://www.upwork.com/jobs/~2">'))
         self.assertTrue(lines[3].startswith('• n/a <a href="https://www.upwork.com/jobs/~3">'))
         self.assertTrue(balanced(message))
 
-    def test_sample_alert_formats(self) -> None:
-        text = format_brief(_sample_alert())
+    def testsample_alert_formats(self) -> None:
+        text = format_brief(sample_alert())
         self.assertIn("<b>82</b> · Sample section · matched: Python, Next.js &amp; &lt;PostgreSQL&gt;", text)
         self.assertTrue(balanced(text))
 
@@ -140,7 +140,7 @@ class SendTest(unittest.TestCase):
     def test_few_jobs_one_brief_each_with_pause(self) -> None:
         post = FakePost([])
         n, sleeps = notifier(post)
-        n.notify_jobs([alert("~1"), alert("~2")])
+        n.notify_jobs([alert("~1"), alert("~2")], "run", 0)
         self.assertEqual(len(post.calls), 2)
         self.assertEqual(sleeps, [SEND_PAUSE_S])
         url, form = post.calls[0]
@@ -150,35 +150,35 @@ class SendTest(unittest.TestCase):
 
     def test_threshold_switches_to_digest(self) -> None:
         post = FakePost([])
-        notifier(post)[0].notify_jobs([alert(f"~{i}") for i in range(DIGEST_THRESHOLD)])
+        notifier(post)[0].notify_jobs([alert(f"~{i}") for i in range(DIGEST_THRESHOLD)], "run", 0)
         self.assertEqual(len(post.calls), DIGEST_THRESHOLD)
         post = FakePost([])
-        notifier(post)[0].notify_jobs([alert(f"~{i}") for i in range(DIGEST_THRESHOLD + 1)])
+        notifier(post)[0].notify_jobs([alert(f"~{i}") for i in range(DIGEST_THRESHOLD + 1)], "run", 0)
         self.assertEqual(len(post.calls), 1)
-        self.assertIn(f"gigradar: {DIGEST_THRESHOLD + 1} new jobs", post.calls[0][1]["text"])
+        self.assertIn(f"Gigradar: {DIGEST_THRESHOLD + 1} new jobs", post.calls[0][1]["text"])
 
     def test_status_message_escaped_and_capped(self) -> None:
         post = FakePost([])
-        notifier(post)[0].notify("gigradar: click needed", "<win> & " * 1000)
+        notifier(post)[0].notify("Gigradar: click needed", "<win> & " * 1000, None)
         text = post.calls[0][1]["text"]
-        self.assertTrue(text.startswith("<b>gigradar: click needed</b>\n&lt;win&gt; &amp;"))
+        self.assertTrue(text.startswith("<b>Gigradar: click needed</b>\n&lt;win&gt; &amp;"))
         self.assertLessEqual(len(text), MAX_CHARS)
 
     def test_api_error_raises_without_token(self) -> None:
         reply = (401, json.dumps({"ok": False, "description": "Unauthorized"}).encode())
         with self.assertRaises(TelegramError) as ctx:
-            notifier(FakePost([reply]))[0].notify_jobs([alert("~1")])
+            notifier(FakePost([reply]))[0].notify_jobs([alert("~1")], "run", 0)
         self.assertEqual(str(ctx.exception), "HTTP 401: Unauthorized")
 
     def test_ok_false_and_non_json_raise(self) -> None:
         for reply in [(200, b'{"ok": false, "description": "Bad Request: chat not found"}'), (502, b"<html>bad gateway")]:
             with self.subTest(reply=reply[0]), self.assertRaises(TelegramError):
-                notifier(FakePost([reply]))[0].notify("t", "m")
+                notifier(FakePost([reply]))[0].notify("t", "m", None)
 
     def test_network_error_is_scrubbed_of_token(self) -> None:
         leak = OSError(f"connect failed for https://api.telegram.org/bot{TOKEN}/sendMessage")
         with self.assertRaises(TelegramError) as ctx:
-            notifier(FakePost([leak]))[0].notify("t", "m")
+            notifier(FakePost([leak]))[0].notify("t", "m", None)
         self.assertNotIn(TOKEN, str(ctx.exception))
         self.assertIn("<bot-token>", str(ctx.exception))
         self.assertIsNone(ctx.exception.__cause__)  # `from None`: no chained traceback with the URL
@@ -186,7 +186,7 @@ class SendTest(unittest.TestCase):
     def test_failure_mid_batch_stops_and_raises(self) -> None:
         post = FakePost([(200, b'{"ok": true}'), (429, b'{"ok": false, "description": "Too Many Requests"}')])
         with self.assertRaises(TelegramError):
-            notifier(post)[0].notify_jobs([alert("~1"), alert("~2"), alert("~3")])
+            notifier(post)[0].notify_jobs([alert("~1"), alert("~2"), alert("~3")], "run", 0)
         self.assertEqual(len(post.calls), 2)  # no retry, nothing after the failure
 
 

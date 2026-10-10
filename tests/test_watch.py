@@ -17,9 +17,9 @@ from gigradar.embed import EmbedderError
 from gigradar.notify import Alert
 from gigradar.score import Score
 from gigradar.search import SearchBlocked
-from gigradar.store import established_searches, open_store, record_searches, seen_count
+from gigradar.store import established_searches, mark_seen, open_store, record_searches, seen_count
 from gigradar.tokens import TokenUnavailable
-from gigradar.watch import (EXIT_CONFIG, EXIT_ERROR, EXIT_OK, EXIT_STOPPED, SCORING_BUDGET_S, SCORING_CHUNK,
+from gigradar.watch import (EXIT_CONFIG, EXIT_ERROR, EXIT_OK, EXIT_STOPPED, BACKLOG_BUDGET_S, SCORING_BUDGET_S, SCORING_CHUNK,
                             build_score_fn, main, run_watch)
 from test_store import make_v1_store
 from upwork_search import Job
@@ -86,12 +86,12 @@ class FakeNotifier:
         self.batches: list[list[str]] = []  # job ids per notify_jobs call
         self.alerts: list[Alert] = []
 
-    def notify(self, title: str, message: str) -> None:
+    def notify(self, title: str, message: str, link: str | None) -> None:
         if self.fail:
             raise RuntimeError("toast broke")
         self.sent.append((title, message))
 
-    def notify_jobs(self, alerts: list[Alert]) -> None:
+    def notify_jobs(self, alerts: list[Alert], run: str, below) -> None:
         if self.fail:
             raise RuntimeError("telegram broke")
         self.batches.append([a.job.url.rsplit("/", 1)[-1] for a in alerts])
@@ -317,13 +317,45 @@ class ScoringWatchTest(unittest.TestCase):
         self.run_with({"a": [], "b": []}, score_fn)
         self.assertEqual(score_fn.calls, [])  # the real model is never loaded in such runs
 
-    def test_seeded_jobs_are_not_scored(self) -> None:
+    def test_seeded_jobs_are_scored_silently_after_the_alerts(self) -> None:
         self.conn.execute("DELETE FROM search_runs WHERE search_name = 'b'")  # b: first run
         self.conn.commit()
         score_fn = FakeScoreFn()
         _, notifier = self.run_with({"a": [job("~2")], "b": [job("~4"), job("~6")]}, score_fn)
-        self.assertEqual(score_fn.calls, [["~2"]])
-        self.assertEqual(notifier.batches, [["~2"]])
+        self.assertEqual(score_fn.calls, [["~2"], ["~4", "~6"]])   # the alert first, then the seeded ones
+        self.assertEqual(notifier.batches, [["~2"]])               # ...which are never announced
+        self.assertEqual(self.stored_scores(), [("~2", 20), ("~4", 40), ("~6", 60)])
+
+    def test_jobs_left_unscored_are_scored_by_a_later_run(self) -> None:
+        mark_seen(self.conn, [job("~3"), job("~5")], NOW)   # stored earlier, never scored
+        score_fn = FakeScoreFn()
+        with self.assertLogs("gigradar", "INFO") as logs:
+            self.run_with({"a": [], "b": []}, score_fn)
+        self.assertEqual(self.stored_scores(), [("~3", 30), ("~5", 50)])
+        self.assertTrue(any("scored 2 of 2 stored jobs" in line for line in logs.output))
+        score_fn.calls.clear()
+        self.run_with({"a": [], "b": []}, score_fn)
+        self.assertEqual(score_fn.calls, [])   # nothing left: the model is not even loaded
+
+    def test_backlog_scoring_stops_at_its_budget_and_keeps_what_it_scored(self) -> None:
+        mark_seen(self.conn, [job(f"~{i}") for i in range(1, 6 * SCORING_CHUNK + 1)], NOW)
+        clock, fake = ManualClock(), FakeScoreFn()
+
+        def slow_score(chunk):
+            clock.now += BACKLOG_BUDGET_S / 2
+            return fake(chunk)
+
+        self.run_with({"a": [], "b": []}, slow_score, clock=clock)
+        self.assertEqual(len(fake.calls), 2)
+        self.assertEqual(len(self.stored_scores()), 2 * SCORING_CHUNK)
+
+    def test_a_failing_scorer_does_not_fail_the_backlog_run(self) -> None:
+        mark_seen(self.conn, [job("~3")], NOW)
+        with self.assertLogs("gigradar", "ERROR") as logs:
+            code, _ = self.run_with({"a": [], "b": []}, FakeScoreFn(fail_on_call=1))
+        self.assertEqual(code, EXIT_OK)
+        self.assertIn("scoring the stored jobs failed", logs.output[0])
+        self.assertEqual(self.stored_scores(), [])
 
     def test_scoring_failure_alerts_unscored_and_marks_seen(self) -> None:
         jobs = [job(f"~{i}") for i in range(1, SCORING_CHUNK + 4)]  # two chunks; the second fails
@@ -335,7 +367,7 @@ class ScoringWatchTest(unittest.TestCase):
         self.assertEqual(values[:SCORING_CHUNK], sorted(values[:SCORING_CHUNK], reverse=True))
         self.assertEqual(values[SCORING_CHUNK:], [None] * 3)  # unscored last
         self.assertEqual(seen_count(self.conn), len(jobs))
-        self.assertEqual(len(self.stored_scores()), SCORING_CHUNK)
+        self.assertEqual(len(self.stored_scores()), len(jobs))   # the 3 left unscored were scored right after
 
     def test_budget_exhausted_alerts_the_rest_unscored(self) -> None:
         jobs = [job(f"~{i}") for i in range(1, 3 * SCORING_CHUNK + 1)]
@@ -347,7 +379,7 @@ class ScoringWatchTest(unittest.TestCase):
 
         with self.assertLogs("gigradar", "WARNING") as logs:
             _, notifier = self.run_with({"a": jobs, "b": []}, slow_score, clock=clock)
-        self.assertEqual(len(fake.calls), 1)
+        self.assertEqual(len(fake.calls), 3)   # the alerts' one, then two chunks of the backlog before its budget ends
         self.assertTrue(any("scoring budget" in line for line in logs.output))
         scored = [a for a in notifier.alerts if a.score is not None]
         self.assertEqual(len(scored), SCORING_CHUNK)

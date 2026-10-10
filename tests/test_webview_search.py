@@ -33,14 +33,13 @@ class FakeClock:
 
 
 class FakePage:
-    def __init__(self, token_at: float | None, after_show: bool, clock: FakeClock, results: list) -> None:
-        self.token_at, self.after_show, self.clock = token_at, after_show, clock
+    def __init__(self, token_at: float | None, clock: FakeClock, results: list) -> None:
+        self.token_at, self.clock = token_at, clock
         self.results = list(results)
-        self.shown = False
         self.scripts: list[str] = []
 
     def token_cookie(self) -> str | None:
-        if self.token_at is None or (self.after_show and not self.shown):
+        if self.token_at is None:
             return None
         return "tok" if self.clock() >= self.token_at else None
 
@@ -50,20 +49,6 @@ class FakePage:
         if isinstance(outcome, Exception):
             raise outcome
         return outcome
-
-    def show(self) -> None:
-        self.shown = True
-
-
-class FakeNotifier:
-    def __init__(self, fail: bool) -> None:
-        self.fail = fail
-        self.sent: list[tuple[str, str]] = []
-
-    def notify(self, title: str, message: str) -> None:
-        self.sent.append((title, message))
-        if self.fail:
-            raise RuntimeError("toast broke")
 
 
 class FetchScriptTest(unittest.TestCase):
@@ -108,46 +93,41 @@ class SessionTest(unittest.TestCase):
     def setUp(self) -> None:
         self.clock = FakeClock()
 
-    def page(self, token_at: float | None, after_show: bool, results: list) -> FakePage:
-        return FakePage(token_at, after_show, self.clock, results)
+    def page(self, token_at: float | None, results: list) -> FakePage:
+        return FakePage(token_at, self.clock, results)
 
-    def test_token_while_hidden_no_show_no_notify(self) -> None:
-        page, notifier = self.page(3, False, []), FakeNotifier(False)
-        self.assertEqual(wait_for_token(page, notifier, self.clock, self.clock.sleep), "tok")
-        self.assertFalse(page.shown)
-        self.assertEqual(notifier.sent, [])
+    def test_token_while_hidden(self) -> None:
+        self.assertEqual(wait_for_token(self.page(3, []), self.clock, self.clock.sleep, False), "tok")
 
-    def test_click_needed_shows_window_and_notifies(self) -> None:
-        page, notifier = self.page(TOKEN_WAIT_S + 30, True, []), FakeNotifier(False)
-        self.assertEqual(wait_for_token(page, notifier, self.clock, self.clock.sleep), "tok")
-        self.assertTrue(page.shown)
-        self.assertEqual(len(notifier.sent), 1)
-        self.assertIn("click", notifier.sent[0][0])
+    def test_a_hidden_run_gives_up_after_the_short_wait_and_never_waits_for_a_click(self) -> None:
+        # a scheduled run has no window to click in: Cloudflare's check means "stop, the app will ask the user once"
+        with self.assertRaises(TokenUnavailable) as raised:
+            wait_for_token(self.page(TOKEN_WAIT_S + 30, []), self.clock, self.clock.sleep, False)
+        self.assertLessEqual(self.clock.now, TOKEN_WAIT_S + 2)
+        self.assertIn("quick check", str(raised.exception))
 
-    def test_no_click_in_time_is_token_unavailable(self) -> None:
-        page, notifier = self.page(None, True, []), FakeNotifier(True)  # notifier failure is tolerated
+    def test_visible_window_waits_for_the_click_at_once(self) -> None:
+        self.assertEqual(wait_for_token(self.page(TOKEN_WAIT_S + 30, []), self.clock, self.clock.sleep, True), "tok")
         with self.assertRaises(TokenUnavailable):
-            wait_for_token(page, notifier, self.clock, self.clock.sleep)
-        self.assertTrue(page.shown)
-        self.assertLessEqual(self.clock.now, TOKEN_WAIT_S + CLICK_WAIT_S + 2)
+            wait_for_token(self.page(None, []), self.clock, self.clock.sleep, True)
+        self.assertLessEqual(self.clock.now, TOKEN_WAIT_S + 30 + CLICK_WAIT_S + 2)
 
     def test_one_fetch_per_search(self) -> None:
         ok = {"status": 200, "cf": None, "text": graphql_body([RAW_JOB], 1)}
-        page = self.page(0, False, [ok, ok])
-        result = run_session(page, FakeNotifier(False), lambda search: [search(SPEC), search(SPEC)],
-                             self.clock, self.clock.sleep)
+        page = self.page(0, [ok, ok])
+        result = run_session(page, lambda search: [search(SPEC), search(SPEC)], self.clock, self.clock.sleep, False)
         self.assertEqual([len(r) for r in result], [1, 1])
         self.assertEqual(len(page.scripts), 2)
 
     def test_fetch_timeout_is_blocked(self) -> None:
-        page = self.page(0, False, [TimeoutError()])
+        page = self.page(0, [TimeoutError()])
         with self.assertRaises(SearchBlocked):
-            run_session(page, FakeNotifier(False), lambda search: search(SPEC), self.clock, self.clock.sleep)
+            run_session(page, lambda search: search(SPEC), self.clock, self.clock.sleep, False)
 
     def test_no_token_means_no_fetch(self) -> None:
-        page = self.page(None, True, [])
+        page = self.page(None, [])
         with self.assertRaises(TokenUnavailable):
-            run_session(page, FakeNotifier(False), lambda search: search(SPEC), self.clock, self.clock.sleep)
+            run_session(page, lambda search: search(SPEC), self.clock, self.clock.sleep, False)
         self.assertEqual(page.scripts, [])
 
 

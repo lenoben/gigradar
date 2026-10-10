@@ -23,8 +23,9 @@ import urllib.parse
 import urllib.request
 from collections.abc import Callable
 
+from gigradar import branding, netutil
 from gigradar.jobfields import format_money, parse_amount
-from gigradar.notify import Alert, score_text
+from gigradar.notify import Alert, below_text, score_text
 from gigradar.score import Score
 from upwork_search import Job
 
@@ -52,7 +53,7 @@ def urllib_post(url: str, body: bytes) -> tuple[int, bytes]:
     request = urllib.request.Request(url, data=body, method="POST",
                                      headers={"Content-Type": "application/x-www-form-urlencoded"})
     try:
-        with urllib.request.urlopen(request, timeout=TIMEOUT_S) as response:
+        with netutil.urlopen(request, TIMEOUT_S) as response:
             return response.status, response.read()
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read()
@@ -135,10 +136,11 @@ def _brief(alert: Alert, desc_chars: int, skills_chars: int) -> str:
     return "\n".join(lines)
 
 
-def format_digest(alerts: list[Alert]) -> list[str]:
+def format_digest(alerts: list[Alert], below: int) -> list[str]:
     """Score + title link + pay per line, in the given (score) order, split into as many
     messages as needed, each <= MAX_CHARS. Splits only between whole lines, so no HTML tag is cut."""
-    header = f"<b>gigradar: {len(alerts)} new jobs</b>"
+    total = len(alerts) + below
+    header = f"<b>{branding.APP_DISPLAY_NAME}: {total} new jobs</b>" + (f" — {below_text(below)}" if below else "")
     lines = []
     for alert in alerts:
         job = alert.job
@@ -151,7 +153,7 @@ def format_digest(alerts: list[Alert]) -> list[str]:
     for line in lines:
         if len(current) + 1 + len(line) > MAX_CHARS:
             messages.append(current)
-            current = "<b>gigradar (cont.)</b>"
+            current = f"<b>{branding.APP_DISPLAY_NAME} (cont.)</b>"
         current += "\n" + line
     messages.append(current)
     return messages
@@ -164,14 +166,18 @@ class TelegramNotifier:
         self._post = post
         self._sleep: Callable[[float], None] = time.sleep
 
-    def notify(self, title: str, message: str) -> None:
+    def notify(self, title: str, message: str, link: str | None) -> None:
         # Cap the plain text first so escaping (which only lengthens) can't break the limit.
         title, message = title[:TITLE_CHARS], message[:STATUS_CHARS]
         self._send(f"<b>{html.escape(title, quote=False)}</b>\n{html.escape(message, quote=False)}")
 
-    def notify_jobs(self, alerts: list[Alert]) -> None:
-        messages = ([format_brief(alert) for alert in alerts] if len(alerts) <= DIGEST_THRESHOLD
-                    else format_digest(alerts))
+    def notify_jobs(self, alerts: list[Alert], run: str, below: int) -> None:
+        if len(alerts) > DIGEST_THRESHOLD:
+            messages = format_digest(alerts, below)
+        else:   # with jobs left out, a first line says how many came in: the briefs below show only the best ones
+            total = len(alerts) + below
+            note = [f"<b>{branding.APP_DISPLAY_NAME}: {total} new jobs</b> — {below_text(below)}"] if below else []
+            messages = note + [format_brief(alert) for alert in alerts]
         for i, text in enumerate(messages):
             if i:
                 self._sleep(SEND_PAUSE_S)
@@ -200,9 +206,9 @@ class TelegramNotifier:
         return text.replace(self._token, "<bot-token>") if self._token else text
 
 
-def _sample_alert() -> Alert:
+def sample_alert() -> Alert:
     job = Job(
-        title="gigradar test: Senior Python & <Next.js> engineer for AI tooling",
+        title="Gigradar test: Senior Python & <Next.js> engineer for AI tooling",
         url="https://www.upwork.com/jobs/~0123456789abcdef",
         job_type="HOURLY", published=None, hourly_min="50.0", hourly_max="80.0", fixed_budget=None,
         tier="ExpertLevel", skills="Python, Next.js, PostgreSQL, LLM",
@@ -228,7 +234,7 @@ def main(argv: list[str]) -> int:
         print("TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in .env", file=sys.stderr)
         return 2
     try:
-        TelegramNotifier(token, chat_id, urllib_post).notify_jobs([_sample_alert()])
+        TelegramNotifier(token, chat_id, urllib_post).notify_jobs([sample_alert()], "", 0)
     except TelegramError as exc:
         print(f"Telegram test FAILED: {exc}", file=sys.stderr)
         return 1

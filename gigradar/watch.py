@@ -9,8 +9,21 @@ A search's first run seeds silently: what only it found is marked seen, no notif
 blast (also for a search added later). Jobs are marked seen only after the notification
 went out, so a failed notification re-sends them next run.
 
+Upwork access (recheck.py): a run that cannot get through (the Cloudflare clearance expired) tells the user ONCE
+and leaves a marker; later blocked runs log one line and stop at once, no window opens by itself. A run that gets
+through removes the marker.
+
+Quiet hours ([schedule] quiet_start/quiet_end): a scheduled run in that window does nothing (jobs wait for the
+next run; `--ignore-quiet-hours` is for a check started by hand).
+
 Crash detection (runstate.py): each run marks start/completion in run_state.json next to the store;
 a run that finds the previous one unfinished sends one warning (log + Telegram, toast if no Telegram).
+
+Every stored job gets a score: jobs seeded silently (a search's first run) are scored after the alerts, and any job
+still unscored (a run ran out of time, or scoring failed) is picked up by the next runs, newest first.
+
+Retention ([retention] in gigradar.toml, written by the app): jobs older than keep_days are pruned at the end of a run,
+keeping only a marker so they never alert again. Without the table nothing is deleted.
 
 With [profile] in gigradar.toml, new jobs are scored before alerting (shadow mode: shown
 and sorted, never filtered); a scoring failure alerts them unscored ("Score n/a").
@@ -28,15 +41,16 @@ from datetime import datetime, timezone
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
+from gigradar import branding, recheck
 from gigradar.config import Config, ConfigError, SearchSpec, default_paths, load_config, load_dotenv
 from gigradar.embed import preload_runtime
 from gigradar.notify import Alert, Notifier, build_notifier, score_text, warning_notifier
 from gigradar.score import EmbeddingScorer, Score, scorer_from_config
 from gigradar.runstate import begin_run, end_run, pid_alive, state_path
-from gigradar.search import UPSTREAM_SEARCH, CurlSearcher, Searcher, SearchFn
+from gigradar.search import UPSTREAM_SEARCH, CurlSearcher, Searcher, SearchBlocked, SearchFn
 from gigradar.store import (SqliteEmbeddingCache, established_searches, filter_new, job_id, mark_seen, open_store,
-                            record_searches, save_scores)
-from gigradar.tokens import StopRun, build_provider
+                            prune, record_searches, save_scores, unscored_jobs)
+from gigradar.tokens import StopRun, TokenUnavailable, build_provider
 from upwork_search import Job
 
 log = logging.getLogger("gigradar")
@@ -49,6 +63,8 @@ EXIT_OK, EXIT_ERROR, EXIT_CONFIG, EXIT_STOPPED = 0, 1, 2, 75
 # jobs (2 searches x 30) at ~0.6 s each plus the ~4 s model load; any rest goes out unscored.
 SCORING_BUDGET_S = 60
 SCORING_CHUNK = 10  # jobs per scoring call; the budget is checked between chunks
+BACKLOG_BUDGET_S = 120   # scoring stored jobs that have no score yet (seeded silently); the worst case above grows to ~712 s
+BACKLOG_LIMIT = 300      # at most this many per run, newest first; the rest follows in the next runs
 
 Results = list[tuple[SearchSpec, list[Job]]]
 ScoreFn = Callable[[list[Job]], list[Score]]
@@ -101,12 +117,35 @@ def process(conn, results: Results, notifier: Notifier, now: datetime,
         for a in alerts:
             if a not in notified:
                 log.info("filtered (below min_score %d): %s | %s", min_score, score_text(a.score), a.job.title)
-        if notified:
-            notifier.notify_jobs(notified)  # raises on failure -> not marked seen -> re-sent next run
+        if notified:   # the others are counted in the message, not listed
+            notifier.notify_jobs(notified, now.isoformat(), len(alerts) - len(notified))  # raises on failure -> re-sent next run
         mark_seen(conn, alert, now)  # filtered ones too: decided, never alerted later
     filtered = f", {len(alert) - len(notified)} below min_score {min_score}" if min_score else ""
     log.info("%d new of %d found%s", len(alert), len(jobs), filtered)
     return len(notified)
+
+
+def score_backlog(conn, score_fn: ScoreFn | None, clock: Callable[[], float], now: datetime) -> int:
+    """Score stored jobs that have no score (seeded silently, or never scored), newest first, saving after every chunk
+    so a stop loses nothing. Within BACKLOG_BUDGET_S; a failure is logged and the next run tries again.
+    Returns the number of jobs scored."""
+    if score_fn is None:
+        return 0
+    jobs = unscored_jobs(conn, "embed", BACKLOG_LIMIT)
+    if not jobs:
+        return 0
+    deadline, started, done = clock() + BACKLOG_BUDGET_S, clock(), 0
+    try:
+        for start in range(0, len(jobs), SCORING_CHUNK):
+            if clock() >= deadline:
+                break
+            chunk = jobs[start:start + SCORING_CHUNK]
+            save_scores(conn, chunk, score_fn(chunk), now)
+            done += len(chunk)
+    except Exception:  # noqa: BLE001  scoring the backlog must never fail the run; logged with traceback
+        log.exception("scoring the stored jobs failed after %d of %d", done, len(jobs))
+    log.info("scored %d of %d stored jobs that had no score, in %.1fs", done, len(jobs), clock() - started)
+    return done
 
 
 def score_alerts(jobs: list[Job], score_fn: ScoreFn | None, clock: Callable[[], float]) -> list[Alert]:
@@ -165,13 +204,51 @@ def run_watch(cfg: Config, searcher: Searcher, notifier: Notifier, conn, now: da
         log.warning("run stopped before searching: %s", exc)
         results, stopped = [], exc
     process(conn, results, notifier, now, score_fn, clock, cfg.scoring.min_score)
+    note_upwork_access(recheck.marker_path(cfg.db_path), stopped, notifier, now)
+    score_backlog(conn, score_fn, clock, now)
+    if cfg.retention is not None and cfg.retention.keep_days > 0:
+        pruned = prune(conn, cfg.retention.keep_days, cfg.retention.keep_rated, now)
+        if pruned.jobs or pruned.markers:
+            log.info("pruned %d jobs older than %d days (%d old markers dropped)",
+                     pruned.jobs, cfg.retention.keep_days, pruned.markers)
     return EXIT_STOPPED if stopped else EXIT_OK
 
 
-def build_searcher(cfg: Config, notifier: Notifier) -> Searcher:
+def needs_quick_check(stopped: StopRun | None) -> bool:
+    """Did Upwork itself turn this run away (no token, rejected token, challenge page)? Not: a timeout or a network
+    error, which fix themselves."""
+    if isinstance(stopped, TokenUnavailable):
+        return True
+    return isinstance(stopped, SearchBlocked) and str(stopped).startswith("HTTP ")
+
+
+def note_upwork_access(marker: Path, stopped: StopRun | None, notifier: Notifier, now: datetime) -> None:
+    """Keep the marker in step with the run: set it (and tell the user, once) when Upwork turned the run away,
+    remove it when a run got through. Never raises: this must not change the run's exit code."""
+    try:
+        if stopped is None:
+            if recheck.clear(marker):
+                log.info("Upwork lets the checks through again; the quick check is no longer needed")
+            return
+        if not needs_quick_check(stopped):
+            return
+        state = recheck.read(marker)
+        if state.needed:
+            log.warning("Upwork still needs a quick check (since %s): open %s and click Check Upwork",
+                        state.since or "earlier", branding.APP_DISPLAY_NAME)
+            return
+        notifier.notify(f"{branding.APP_DISPLAY_NAME}: Upwork needs a quick check",
+                        f"Open {branding.APP_DISPLAY_NAME} and click Check Upwork.", branding.STATUS_LINK)
+        recheck.mark_needed(marker, now)   # after the notification: if it failed, the next run tries again
+        log.warning("Upwork needs a quick check: told the user once; no window opens until it is done in the app")
+    except Exception:  # noqa: BLE001  bookkeeping and a failed notification must not fail the run
+        log.exception("could not record or announce that Upwork needs a quick check")
+
+
+def build_searcher(cfg: Config) -> Searcher:
     if cfg.backend == "webview":
         from gigradar.webview_search import WebViewSearcher  # optional pywebview dependency
-        return WebViewSearcher(cfg.webview_profile, notifier, len(cfg.searches))
+        return WebViewSearcher(cfg.webview_profile, len(cfg.searches), visible=False)
     return CurlSearcher(build_provider(cfg.token_sources, cfg.proxy), cfg.proxy, UPSTREAM_SEARCH)
 
 
@@ -194,9 +271,11 @@ def setup_logging(log_file: Path | None) -> None:
 
 
 def main(argv: Sequence[str]) -> int:
-    default_toml, env_path = default_paths()
+    default_toml, _ = default_paths()
     parser = argparse.ArgumentParser(prog="python -m gigradar.watch", description=__doc__.split("\n")[0])
     parser.add_argument("--config", type=Path, default=default_toml, help="gigradar.toml path")
+    parser.add_argument("--ignore-quiet-hours", action="store_true",
+                        help="run even inside [schedule] quiet hours (a check started by hand)")
     parser.add_argument("--log-file", type=Path, default=None,
                         help="append logs here (rotating, 1 MB x 3) instead of stderr; needed under pythonw.exe")
     args = parser.parse_args(argv)
@@ -204,12 +283,15 @@ def main(argv: Sequence[str]) -> int:
     log.info("run start")  # vs. Task Scheduler's start time: shows interpreter startup lag
 
     try:
-        load_dotenv(env_path, os.environ)
+        load_dotenv(args.config.parent / ".env", os.environ)  # secrets live next to the config
         cfg = load_config(args.config, os.environ)
+        if not args.ignore_quiet_hours and cfg.schedule.in_quiet_hours(datetime.now().time()):
+            log.info("quiet hours (%s to %s): no check this time", cfg.schedule.quiet_start, cfg.schedule.quiet_end)
+            return EXIT_OK
         if cfg.profile is not None:
             preload_runtime()  # before build_notifier loads winrt: see its docstring
         notifier = build_notifier(cfg)
-        searcher = build_searcher(cfg, notifier)
+        searcher = build_searcher(cfg)
     except ConfigError as exc:
         log.error("config: %s", exc)
         return EXIT_CONFIG

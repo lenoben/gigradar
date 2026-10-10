@@ -11,7 +11,8 @@ Schema v2 (PRAGMA user_version): v1's `seen_jobs` unchanged, plus
 - job_search: which search found which job;
 - scores / embeddings / labels: used by the scoring steps. No foreign keys to seen_jobs:
   a job is scored before it is marked seen.
-v1 -> v2 migrates in one transaction after a backup copy of the file.
+Schema v3 adds expired_jobs: the marker a pruned job leaves behind (id + date) so it never alerts again.
+Every migration runs in one transaction after a backup copy of the file.
 """
 
 from __future__ import annotations
@@ -21,14 +22,15 @@ import sqlite3
 import sys
 from array import array
 from collections.abc import Sequence
-from dataclasses import asdict, fields
-from datetime import datetime
+from dataclasses import asdict, dataclass, fields
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from gigradar.score import Score
 from upwork_search import Job
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
+EXPIRED_MARKER_DAYS = 60   # how long a pruned job is still remembered as seen
 
 _V1_TABLES = (
     """CREATE TABLE seen_jobs (
@@ -79,6 +81,14 @@ _V2_TABLES = (
 )
 
 
+_V3_TABLES = (
+    """CREATE TABLE expired_jobs (
+        job_id     TEXT PRIMARY KEY,
+        expired_at TEXT NOT NULL
+    )""",
+)
+
+
 class StoreError(RuntimeError):
     """The store can't be opened or migrated (newer schema, backup failed, ...)."""
 
@@ -98,7 +108,7 @@ def open_store(path: Path, adopt: Sequence[str], now: datetime) -> sqlite3.Conne
         version = _version(conn)
         if version > SCHEMA_VERSION:
             raise StoreError(f"store schema v{version} is newer than this code (v{SCHEMA_VERSION})")
-        if version == 1 and not in_memory:
+        if 0 < version < SCHEMA_VERSION and not in_memory:
             backup(conn, path, now)
         if version < SCHEMA_VERSION:
             _migrate(conn, adopt, now)
@@ -126,7 +136,7 @@ def open_existing(path: Path, busy_timeout: float) -> sqlite3.Connection:
 
 
 def backup(conn: sqlite3.Connection, path: Path, now: datetime) -> Path:
-    """Copy the store next to itself (gigradar.db.v1-<UTC time>.bak) via SQLite's backup API."""
+    """Copy the store next to itself (gigradar.db.v<version>-<UTC time>.bak) via SQLite's backup API."""
     target = path.with_name(f"{path.name}.v{_version(conn)}-{now:%Y%m%dT%H%M%SZ}.bak")
     if target.exists():
         raise StoreError(f"backup {target} already exists; not overwriting it")
@@ -147,19 +157,22 @@ def _version(conn: sqlite3.Connection) -> int:
 
 
 def _migrate(conn: sqlite3.Connection, adopt: Sequence[str], now: datetime) -> None:
-    """0 -> 2 (new store) or 1 -> 2, all in one transaction: on any error nothing changes."""
+    """0 -> 3 (new store), 1 -> 3 or 2 -> 3, all in one transaction: on any error nothing changes."""
     conn.execute("BEGIN IMMEDIATE")  # write lock first, then re-check: another run may have migrated
     try:
         version = _version(conn)
         if version == 0:
-            for ddl in _V1_TABLES + _V2_TABLES:
+            for ddl in _V1_TABLES + _V2_TABLES + _V3_TABLES:
                 conn.execute(ddl)
-        elif version == 1:
-            for ddl in _V2_TABLES:
+        else:
+            if version == 1:
+                for ddl in _V2_TABLES:
+                    conn.execute(ddl)
+                stamp = now.isoformat()
+                conn.executemany("INSERT INTO search_runs VALUES (?, ?, ?)",
+                                 [(name, stamp, stamp) for name in dict.fromkeys(adopt)])
+            for ddl in _V3_TABLES:
                 conn.execute(ddl)
-            stamp = now.isoformat()
-            conn.executemany("INSERT INTO search_runs VALUES (?, ?, ?)",
-                             [(name, stamp, stamp) for name in dict.fromkeys(adopt)])
         conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
         conn.commit()
     except BaseException:
@@ -183,9 +196,15 @@ def filter_new(conn: sqlite3.Connection, jobs: list[Job]) -> list[Job]:
         if jid is None or jid in batch:
             continue
         batch.add(jid)
-        if conn.execute("SELECT 1 FROM seen_jobs WHERE job_id = ?", (jid,)).fetchone() is None:
+        if not _known(conn, jid):
             new.append(job)
     return new
+
+
+def _known(conn: sqlite3.Connection, jid: str) -> bool:
+    """Seen before: stored, or pruned (expired_jobs keeps the id so an old job never alerts again)."""
+    return (conn.execute("SELECT 1 FROM seen_jobs WHERE job_id = ?", (jid,)).fetchone() is not None
+            or conn.execute("SELECT 1 FROM expired_jobs WHERE job_id = ?", (jid,)).fetchone() is not None)
 
 
 def mark_seen(conn: sqlite3.Connection, jobs: list[Job], now: datetime) -> int:
@@ -215,8 +234,8 @@ def record_searches(conn: sqlite3.Connection, results: Sequence[tuple[str, list[
             "ON CONFLICT (search_name) DO UPDATE SET last_run = excluded.last_run",
             [(name, stamp, stamp) for name, _ in results])
         conn.executemany(
-            "INSERT OR IGNORE INTO job_search VALUES (?, ?, ?)",
-            [(jid, name, stamp) for name, jobs in results for job in jobs
+            "INSERT OR IGNORE INTO job_search SELECT ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM expired_jobs WHERE job_id = ?)",
+            [(jid, name, stamp, jid) for name, jobs in results for job in jobs
              if (jid := job_id(job)) is not None])
 
 
@@ -232,6 +251,40 @@ def save_scores(conn: sqlite3.Connection, jobs: Sequence[Job], scores: Sequence[
     return len(rows)
 
 
+def unscored_jobs(conn: sqlite3.Connection, scorer: str, limit: int) -> list[Job]:
+    """Stored jobs without a score of `scorer`, newest first: jobs seeded silently, or whose scoring failed or
+    ran out of time. At most `limit`."""
+    rows = conn.execute(
+        "SELECT payload FROM seen_jobs s WHERE NOT EXISTS (SELECT 1 FROM scores c WHERE c.job_id = s.job_id AND c.scorer = ?) "
+        "ORDER BY first_seen DESC, job_id LIMIT ?", (scorer, limit)).fetchall()
+    return [job_from_payload(payload) for (payload,) in rows]
+
+
+@dataclass(frozen=True)
+class Pruned:
+    jobs: int       # stored jobs deleted (text, scores, embeddings, search links, and labels when rated jobs go too)
+    markers: int    # old expiry markers deleted
+
+
+def prune(conn: sqlite3.Connection, keep_days: int, keep_rated: bool, now: datetime) -> Pruned:
+    """Delete jobs first seen more than `keep_days` ago, in one transaction. A pruned job leaves a marker (id and
+    date) in expired_jobs so it is never alerted again; markers older than EXPIRED_MARKER_DAYS are dropped.
+    Jobs with a 👍/👎 stay (text and score) when `keep_rated`; otherwise they go with their label."""
+    cutoff = (now - timedelta(days=keep_days)).isoformat()
+    marker_cutoff = (now - timedelta(days=EXPIRED_MARKER_DAYS)).isoformat()
+    rated = "AND job_id NOT IN (SELECT job_id FROM labels) " if keep_rated else ""
+    with conn:
+        ids = [row[0] for row in conn.execute(f"SELECT job_id FROM seen_jobs WHERE first_seen < ? {rated}", (cutoff,))]
+        for start in range(0, len(ids), 500):
+            chunk = ids[start:start + 500]
+            marks = ",".join("?" * len(chunk))
+            conn.executemany("INSERT OR REPLACE INTO expired_jobs VALUES (?, ?)", [(jid, now.isoformat()) for jid in chunk])
+            for table in ("seen_jobs", "job_search", "scores", "embeddings", "labels"):
+                conn.execute(f"DELETE FROM {table} WHERE job_id IN ({marks})", chunk)
+        markers = conn.execute("DELETE FROM expired_jobs WHERE expired_at < ?", (marker_cutoff,)).rowcount
+    return Pruned(len(ids), markers)
+
+
 def stored_jobs(conn: sqlite3.Connection) -> list[Job]:
     """Every job in the store, oldest first, rebuilt from its saved payload."""
     return [job_from_payload(payload)
@@ -241,6 +294,48 @@ def stored_jobs(conn: sqlite3.Connection) -> list[Job]:
 def job_from_payload(payload: str) -> Job:
     names = {f.name for f in fields(Job)}
     return Job(**{k: v for k, v in json.loads(payload).items() if k in names})
+
+
+@dataclass(frozen=True)
+class RecentJob:
+    job_id: str
+    first_seen: str
+    job: Job
+    score: int | None       # the embedding scorer's newest score, if the job was scored
+    reason: str | None
+    label: int | None       # +1 / -1, or None
+
+
+_RECENT_SQL = (
+    "SELECT job_id, first_seen, payload, score, reason, label FROM ("
+    "SELECT s.job_id, s.first_seen, s.payload, "
+    "(SELECT c.value FROM scores c WHERE c.job_id = s.job_id AND c.scorer = 'embed' ORDER BY c.scored_at DESC LIMIT 1) AS score, "
+    "(SELECT c.reason FROM scores c WHERE c.job_id = s.job_id AND c.scorer = 'embed' ORDER BY c.scored_at DESC LIMIT 1) AS reason, "
+    "(SELECT l.label FROM labels l WHERE l.job_id = s.job_id) AS label FROM seen_jobs s {where}) "
+    "WHERE score IS NULL OR score >= ? ORDER BY first_seen DESC, job_id LIMIT ?")
+
+
+def _recent(rows: list[tuple]) -> list[RecentJob]:
+    return [RecentJob(jid, seen, job_from_payload(payload), score, reason, label)
+            for jid, seen, payload, score, reason, label in rows]
+
+
+def recent_jobs(conn: sqlite3.Connection, limit: int, min_score: int) -> list[RecentJob]:
+    """The `limit` most recently seen jobs (newest first) with their embedding score and label. Jobs scored below
+    `min_score` are left out (0 = none); unscored jobs are always included."""
+    return _recent(conn.execute(_RECENT_SQL.format(where=""), (min_score, limit)).fetchall())
+
+
+def run_jobs(conn: sqlite3.Connection, run: str, limit: int, min_score: int) -> list[RecentJob]:
+    """The jobs one run marked seen, i.e. found together (their first_seen is the run's time stamp); `min_score` as
+    for recent_jobs."""
+    return _recent(conn.execute(_RECENT_SQL.format(where="WHERE s.first_seen = ? "), (run, min_score, limit)).fetchall())
+
+
+def recent_job(conn: sqlite3.Connection, jid: str) -> RecentJob | None:
+    """One stored job with its score and label, or None."""
+    rows = conn.execute(_RECENT_SQL.format(where="WHERE s.job_id = ? "), (jid, 0, 1)).fetchall()
+    return _recent(rows)[0] if rows else None
 
 
 def stored_job(conn: sqlite3.Connection, jid: str) -> Job | None:

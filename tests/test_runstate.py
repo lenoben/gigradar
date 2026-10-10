@@ -28,12 +28,12 @@ class FakeWarn:
         self.fail = fail
         self.sent: list[tuple[str, str]] = []
 
-    def notify(self, title: str, message: str) -> None:
+    def notify(self, title: str, message: str, link: str | None) -> None:
         if self.fail:
             raise RuntimeError("telegram down")
         self.sent.append((title, message))
 
-    def notify_jobs(self, alerts) -> None:
+    def notify_jobs(self, alerts, run: str, below) -> None:
         raise AssertionError("a crash warning is a status message, not a job alert")
 
 

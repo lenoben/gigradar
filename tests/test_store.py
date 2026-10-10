@@ -5,12 +5,12 @@ import json
 import sqlite3
 import tempfile
 import unittest
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from gigradar.score import Score
 from gigradar.store import (SCHEMA_VERSION, load_labels_since, save_label, delete_scores, score_rows, StoreError, established_searches, filter_new, job_id, load_scores,
-                            mark_seen, open_existing, open_store, save_job_score, seen_count, stored_job)
+                            mark_seen, open_existing, open_store, prune, record_searches, save_job_score, seen_count, stored_job, unscored_jobs)
 from upwork_search import Job
 
 NOW = datetime(2026, 10, 7, 12, 0, tzinfo=timezone.utc)
@@ -72,8 +72,8 @@ class StoreTest(unittest.TestCase):
             with self.assertRaises(StoreError):
                 open_store(path, [], NOW)
 
-    def test_new_store_is_v2_without_adoption(self) -> None:
-        self.assertEqual(user_version(self.conn), 2)
+    def test_new_store_is_current_without_adoption(self) -> None:
+        self.assertEqual(user_version(self.conn), SCHEMA_VERSION)
         self.assertEqual(tables(self.conn), V2_TABLES)
         self.assertEqual(established_searches(self.conn), set())
 
@@ -89,7 +89,7 @@ CREATE TABLE IF NOT EXISTS seen_jobs (
     payload    TEXT NOT NULL
 );
 """
-V2_TABLES = ["embeddings", "job_search", "labels", "scores", "search_runs", "seen_jobs"]
+V2_TABLES = ["embeddings", "expired_jobs", "job_search", "labels", "scores", "search_runs", "seen_jobs"]
 
 
 def make_v1_store(path: Path, ciphers: list[str]) -> None:
@@ -138,7 +138,7 @@ class MigrationTest(unittest.TestCase):
         before = seen_rows(self.path)
         conn = open_store(self.path, ["py", "next", "py"], NOW)
         try:
-            self.assertEqual(user_version(conn), 2)
+            self.assertEqual(user_version(conn), SCHEMA_VERSION)
             self.assertEqual(tables(conn), V2_TABLES)
             self.assertEqual(established_searches(conn), {"py", "next"})
             self.assertEqual(filter_new(conn, [make_job("~01"), make_job("~02"), make_job("~03")]),
@@ -189,11 +189,27 @@ class MigrationTest(unittest.TestCase):
         finally:
             conn.close()
 
-    def test_reopen_v2_is_idempotent_and_makes_no_backup(self) -> None:
-        open_store(self.path, ["py"], NOW).close()  # new store: v2, nothing adopted
+    def test_v2_store_migrates_to_v3_after_a_backup_and_keeps_its_rows(self) -> None:
+        open_store(self.path, [], NOW).close()
+        conn = sqlite3.connect(str(self.path))
+        conn.execute("DROP TABLE expired_jobs")
+        conn.execute("PRAGMA user_version = 2")
+        conn.commit()
+        conn.close()
+        conn = open_store(self.path, [], NOW)
+        try:
+            self.assertEqual(user_version(conn), SCHEMA_VERSION)
+            self.assertIn("expired_jobs", tables(conn))
+        finally:
+            conn.close()
+        [bak] = self.backups()
+        self.assertEqual(bak.name, "gigradar.db.v2-20261007T120000Z.bak")
+
+    def test_reopen_current_store_is_idempotent_and_makes_no_backup(self) -> None:
+        open_store(self.path, ["py"], NOW).close()  # new store: nothing adopted
         conn = open_store(self.path, ["py"], NOW)
         try:
-            self.assertEqual((user_version(conn), established_searches(conn)), (2, set()))
+            self.assertEqual((user_version(conn), established_searches(conn)), (SCHEMA_VERSION, set()))
         finally:
             conn.close()
         self.assertEqual(self.backups(), [])
@@ -205,11 +221,81 @@ class MigrationTest(unittest.TestCase):
         conn.close()
         conn = open_store(self.path, ["py"], NOW)
         try:
-            self.assertEqual((user_version(conn), seen_count(conn)), (2, 1))
+            self.assertEqual((user_version(conn), seen_count(conn)), (SCHEMA_VERSION, 1))
             self.assertEqual(established_searches(conn), {"py"})
         finally:
             conn.close()
         self.assertEqual(len(self.backups()), 1)
+
+
+def at(days_ago: int) -> datetime:
+    return NOW - timedelta(days=days_ago)
+
+
+class PruneTest(unittest.TestCase):
+    """Retention: old jobs lose their text, scores and embeddings but stay remembered as seen."""
+
+    def setUp(self) -> None:
+        self.conn = open_store(Path(":memory:"), [], NOW)
+        mark_seen(self.conn, [make_job("~old"), make_job("~rated")], at(40))
+        mark_seen(self.conn, [make_job("~new")], at(3))
+        for jid in ("~old", "~rated", "~new"):
+            save_job_score(self.conn, jid, Score(50, "r", "embed", "2"), at(3))
+            self.conn.execute("INSERT INTO embeddings VALUES (?, 'm', 1, x'00000000', 'x')", (jid,))
+        self.conn.execute("INSERT INTO embeddings VALUES ('profile:abc', 'm', 1, x'00000000', 'x')")
+        record_searches(self.conn, [("a", [make_job("~old"), make_job("~new")])], [], at(3))
+        save_label(self.conn, "~rated", 1, at(10))
+        self.conn.commit()
+
+    def tearDown(self) -> None:
+        self.conn.close()
+
+    def ids(self, table: str) -> list[str]:
+        return [r[0] for r in self.conn.execute(f"SELECT job_id FROM {table} ORDER BY job_id")]
+
+    def test_old_jobs_are_deleted_with_everything_that_belongs_to_them(self) -> None:
+        result = prune(self.conn, 30, True, NOW)
+        self.assertEqual((result.jobs, result.markers), (1, 0))
+        self.assertEqual(self.ids("seen_jobs"), ["~new", "~rated"])
+        self.assertEqual(self.ids("scores"), ["~new", "~rated"])
+        self.assertEqual(self.ids("job_search"), ["~new"])
+        self.assertEqual(self.ids("embeddings"), ["profile:abc", "~new", "~rated"])   # the profile's stays
+        self.assertEqual(self.ids("expired_jobs"), ["~old"])
+
+    def test_a_rated_job_keeps_its_text_score_and_label(self) -> None:
+        prune(self.conn, 30, True, NOW)
+        self.assertIsNotNone(stored_job(self.conn, "~rated"))
+        self.assertEqual(self.ids("labels"), ["~rated"])
+
+    def test_rated_jobs_go_too_when_not_kept(self) -> None:
+        prune(self.conn, 30, False, NOW)
+        self.assertEqual(self.ids("seen_jobs"), ["~new"])
+        self.assertEqual(self.ids("labels"), [])
+        self.assertEqual(self.ids("expired_jobs"), ["~old", "~rated"])
+
+    def test_a_pruned_job_never_counts_as_new_again(self) -> None:
+        prune(self.conn, 30, True, NOW)
+        self.assertEqual(filter_new(self.conn, [make_job("~old"), make_job("~fresh")]), [make_job("~fresh")])
+        record_searches(self.conn, [("a", [make_job("~old")])], [], NOW)
+        self.assertEqual(self.ids("job_search"), ["~new"])   # no link to a job that no longer exists
+
+    def test_markers_expire_after_60_days(self) -> None:
+        prune(self.conn, 30, True, NOW)
+        later = NOW + timedelta(days=61)
+        result = prune(self.conn, 30, True, later)
+        self.assertEqual(result.markers, 1)
+        self.assertEqual(self.ids("expired_jobs"), ["~new"])   # ~new aged out meanwhile and was pruned, ~old's marker went
+
+    def test_nothing_old_means_nothing_deleted(self) -> None:
+        result = prune(self.conn, 90, False, NOW)
+        self.assertEqual((result.jobs, result.markers), (0, 0))
+        self.assertEqual(seen_count(self.conn), 3)
+
+    def test_unscored_jobs_lists_only_jobs_without_an_embedding_score(self) -> None:
+        mark_seen(self.conn, [make_job("~fresh")], NOW)
+        self.assertEqual([job_id(j) for j in unscored_jobs(self.conn, "embed", 10)], ["~fresh"])
+        self.assertEqual(unscored_jobs(self.conn, "embed", 0), [])
+        self.assertEqual(len(unscored_jobs(self.conn, "claude", 10)), 4)
 
 
 class JobScoreHelpersTest(unittest.TestCase):
@@ -303,7 +389,7 @@ class OpenExistingTest(unittest.TestCase):
             open_existing(old, 1.0)
         with contextlib.closing(sqlite3.connect(old)) as raw:
             self.assertEqual(raw.execute("PRAGMA user_version").fetchone()[0], 1)   # untouched
-        self.assertEqual(SCHEMA_VERSION, 2)
+        self.assertEqual(SCHEMA_VERSION, 3)
 
 
 if __name__ == "__main__":

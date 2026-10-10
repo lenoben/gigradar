@@ -22,6 +22,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
 
+from gigradar.branding import APP_DISPLAY_NAME
 from gigradar.notify import Notifier
 
 log = logging.getLogger("gigradar")
@@ -136,12 +137,12 @@ def _warn(warn: Notifier, previous: RunState) -> bool:
         started = datetime.fromisoformat(previous.started).astimezone().strftime("%Y-%m-%d %H:%M")
     except ValueError:
         started = previous.started
-    title = "gigradar: the previous run did not finish"
+    title = f"{APP_DISPLAY_NAME}: the previous run did not finish"
     message = (f"The run that started at {started} never completed (crash, kill or shutdown). Its jobs "
                "are not marked seen and are alerted next time they are listed. Check logs/gigradar.log and "
                "the Windows Application log. No further warning until a run completes.")
     try:
-        warn.notify(title, message)
+        warn.notify(title, message, None)
     except Exception:  # noqa: BLE001  a failing channel must not stop the run; retried next run
         log.exception("could not send the crash warning; will retry next run")
         return False

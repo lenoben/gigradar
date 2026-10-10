@@ -7,11 +7,15 @@ Secrets — Telegram bot token/chat id, proxy URL — come ONLY from the environ
 from __future__ import annotations
 
 import os
+import re
+import sys
 import tomllib
 from collections.abc import Mapping, MutableMapping
 from dataclasses import dataclass
+from datetime import time
 from pathlib import Path
 
+from gigradar.branding import DATA_DIR_NAME
 from gigradar.profile import Profile, ProfileError, read_sections
 from upwork_search import CLIENT_HIRES, DURATIONS, JOB_TYPES, PAGE_MAX, TIERS, WORKLOADS, SearchFilters
 
@@ -33,6 +37,10 @@ _PROFILE_KEYS = {"path", "skills", "min_hourly", "min_fixed", "tiers", "exclude_
 _SCORING_KEYS = {"model", "model_dir", "weights", "cos_low", "cos_high", "skill_saturation",
                  "zero_skill_match", "max_words", "min_score"}
 ZERO_SKILL_MATCH = ("zero", "unknown")
+_SCHEDULE_KEYS = {"interval_minutes", "quiet_start", "quiet_end"}
+_RETENTION_KEYS = {"keep_days", "keep_rated"}
+MIN_INTERVAL, MAX_INTERVAL, DEFAULT_INTERVAL = 15, 1440, 30   # minutes; the app offers 30, 60, 120 and 240
+CLOCK = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 DEFAULT_MODEL = "BAAI/bge-small-en-v1.5"
 
 
@@ -62,6 +70,31 @@ class ScoringConfig:
 
 
 @dataclass(frozen=True)
+class ScheduleConfig:
+    """[schedule]: how often the scheduled task runs, and an optional daily pause (local time, HH:MM)."""
+
+    interval_minutes: int
+    quiet_start: str | None
+    quiet_end: str | None
+
+    def in_quiet_hours(self, at: time) -> bool:
+        """True when `at` (local time of day) falls in [quiet_start, quiet_end); the window may cross midnight."""
+        if self.quiet_start is None or self.quiet_end is None:
+            return False
+        start, end = time.fromisoformat(self.quiet_start), time.fromisoformat(self.quiet_end)
+        return start <= at < end if start < end else at >= start or at < end
+
+
+@dataclass(frozen=True)
+class RetentionConfig:
+    """[retention]: how long stored jobs are kept. Present only when the file has the table (the app writes it);
+    without it nothing is ever deleted."""
+
+    keep_days: int      # jobs first seen longer ago are pruned; 0 = keep forever
+    keep_rated: bool    # jobs with a 👍/👎 are never pruned
+
+
+@dataclass(frozen=True)
 class Config:
     db_path: Path
     searches: list[SearchSpec]
@@ -75,6 +108,8 @@ class Config:
     telegram_chat_id: str | None    # env TELEGRAM_CHAT_ID
     profile: Profile | None         # [profile] present = scoring enabled
     scoring: ScoringConfig          # [scoring], all keys optional; only used with a profile
+    schedule: ScheduleConfig        # [schedule], all keys optional
+    retention: RetentionConfig | None   # [retention]; None = keep everything
 
 
 def load_dotenv(path: Path, environ: MutableMapping[str, str]) -> None:
@@ -162,6 +197,8 @@ def load_config(toml_path: Path, environ: Mapping[str, str]) -> Config:
         telegram_chat_id=environ.get("TELEGRAM_CHAT_ID") or None,
         profile=profile,
         scoring=scoring,
+        schedule=_schedule(_table(data, "schedule")),
+        retention=_retention(data["retention"]) if "retention" in data else None,
     )
 
 
@@ -175,16 +212,39 @@ def default_model_dir(environ: Mapping[str, str]) -> Path:
     return _data_root(environ) / "models"
 
 
+HOME_ENV = "GIGRADAR_HOME"
+
+
 def _data_root(environ: Mapping[str, str]) -> Path:
+    r"""GIGRADAR_HOME if set, else %LOCALAPPDATA%\gigradar (~/.local/share/gigradar off Windows)."""
+    override = environ.get(HOME_ENV)
+    if override:
+        return Path(override)
+    return _local_root(environ) / "gigradar"
+
+
+def _local_root(environ: Mapping[str, str]) -> Path:
     base = environ.get("LOCALAPPDATA")
-    root = Path(base) if base else Path.home() / ".local" / "share"
-    return root / "gigradar"
+    return Path(base) if base else Path.home() / ".local" / "share"
+
+
+def app_home(environ: Mapping[str, str], frozen: bool, repo_root: Path) -> Path:
+    """Where config, .env, data/ and logs/ live: GIGRADAR_HOME, else the per-user data dir.
+    One exception keeps a source checkout working unchanged: when not frozen and the repo root
+    holds a gigradar.toml, that checkout is the home (the scheduled task of a git clone)."""
+    if environ.get(HOME_ENV):
+        return Path(environ[HOME_ENV])
+    if not frozen and (repo_root / "gigradar.toml").is_file():
+        return repo_root
+    if frozen:   # not "gigradar": a source checkout keeps its model and browser profile there, and the installer's
+        return _local_root(environ) / DATA_DIR_NAME   # program folder is named after the product
+    return _data_root(environ)
 
 
 def default_paths() -> tuple[Path, Path]:
-    """(gigradar.toml, .env) at the repo root, independent of the current directory."""
-    root = Path(__file__).resolve().parent.parent
-    return root / "gigradar.toml", root / ".env"
+    """(gigradar.toml, .env) of the app home, independent of the current directory."""
+    home = app_home(os.environ, bool(getattr(sys, "frozen", False)), Path(__file__).resolve().parent.parent)
+    return home / "gigradar.toml", home / ".env"
 
 
 def load_default() -> Config:
@@ -298,6 +358,35 @@ def _scoring(table: dict, base: Path, environ: Mapping[str, str]) -> ScoringConf
     return ScoringConfig(model=model, model_dir=model_dir, weight_semantic=semantic, weight_skills=skills,
                          cos_low=cos_low, cos_high=cos_high, skill_saturation=saturation,
                          zero_skill_match=zero_skill_match, max_words=max_words, min_score=min_score)
+
+
+def _schedule(table: dict) -> ScheduleConfig:
+    unknown = set(table) - _SCHEDULE_KEYS
+    if unknown:
+        raise ConfigError(f"schedule: unknown keys {sorted(unknown)}")
+    interval = _get(table, "interval_minutes", int, DEFAULT_INTERVAL, "schedule")
+    if not MIN_INTERVAL <= interval <= MAX_INTERVAL:
+        raise ConfigError(f"schedule.interval_minutes must be {MIN_INTERVAL}..{MAX_INTERVAL}, got {interval}")
+    start, end = _get(table, "quiet_start", str, None, "schedule"), _get(table, "quiet_end", str, None, "schedule")
+    if (start is None) != (end is None):
+        raise ConfigError("schedule: quiet_start and quiet_end go together")
+    if start is not None and not (CLOCK.match(start) and CLOCK.match(end)):
+        raise ConfigError("schedule: quiet_start and quiet_end must look like 22:00")
+    if start is not None and start == end:
+        raise ConfigError("schedule: quiet_start and quiet_end must differ")
+    return ScheduleConfig(interval_minutes=interval, quiet_start=start, quiet_end=end)
+
+
+def _retention(table: object) -> RetentionConfig:
+    if not isinstance(table, dict):
+        raise ConfigError("retention must be a table")
+    unknown = set(table) - _RETENTION_KEYS
+    if unknown:
+        raise ConfigError(f"retention: unknown keys {sorted(unknown)}")
+    keep_days = _get(table, "keep_days", int, 0, "retention")
+    if keep_days < 0:
+        raise ConfigError(f"retention.keep_days must be 0 (forever) or more days, got {keep_days}")
+    return RetentionConfig(keep_days=keep_days, keep_rated=_get(table, "keep_rated", bool, True, "retention"))
 
 
 def _number(table: dict, key: str, fallback: float, where: str) -> float:

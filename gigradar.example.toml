@@ -21,11 +21,25 @@ backend = "webview"
 # webview_profile = "D:/somewhere/else"
 
 [notify]
-# Where new jobs and "click needed" messages go (the log always gets them):
+# Where new jobs and "Upwork needs a quick check" messages go (the log always gets them):
 #   "toast"    = Windows toast with a short summary (needs: pip install -r requirements-toast.txt)
 #   "telegram" = a brief per job, or one digest if a run finds more than 5
 #                (needs TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID in .env; test: python -m gigradar.telegram --test)
 channels = ["toast"]
+
+# [schedule]
+# The desktop app writes this section (Settings > Schedule). The scheduled task itself is registered by the app
+# (or scripts/windows/gigradar-task.ps1 for a checkout); the quiet hours are applied by every scheduled run:
+# a run inside them does nothing, new jobs wait for the first run after them.
+# interval_minutes = 30
+# quiet_start = "22:00"     # local time, may cross midnight
+# quiet_end = "07:00"
+
+# [retention]
+# The desktop app writes this section (Settings > Storage). Without it nothing is ever deleted. With it, at the end of
+# each run jobs first seen longer ago are pruned (text, scores, embeddings); a marker keeps them from alerting again.
+# keep_days = 30           # 0 = forever
+# keep_rated = true        # jobs with a thumbs up/down are never pruned
 
 [token]
 # curl backend only. Where the Upwork visitor token comes from, tried in order:

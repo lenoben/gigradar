@@ -24,12 +24,12 @@ class Recorder:
         self.fail = fail
         self.calls: list[object] = []
 
-    def notify(self, title: str, message: str) -> None:
+    def notify(self, title: str, message: str, link: str | None) -> None:
         self.calls.append(("notify", title))
         if self.fail:
             raise RuntimeError("down")
 
-    def notify_jobs(self, alerts: list[Alert]) -> None:
+    def notify_jobs(self, alerts: list[Alert], run: str, below) -> None:
         self.calls.append(("jobs", len(alerts)))
         if self.fail:
             raise RuntimeError("down")
@@ -37,14 +37,14 @@ class Recorder:
 
 class NotifyTest(unittest.TestCase):
     def test_summary_unscored(self) -> None:
-        self.assertEqual(summarize_alerts([alert("~1")]), ("gigradar: 1 new job", "• job ~1"))
-        title, message = summarize_alerts([alert(f"~{i}") for i in range(5)])
-        self.assertEqual(title, "gigradar: 5 new jobs")
+        self.assertEqual(summarize_alerts([alert("~1")], 0), ("Gigradar: 1 new job", "• job ~1"))
+        title, message = summarize_alerts([alert(f"~{i}") for i in range(5)], 0)
+        self.assertEqual(title, "Gigradar: 5 new jobs")
         self.assertTrue(message.endswith("…and 2 more"))
 
     def test_summary_scored_keeps_order_and_shows_top(self) -> None:
-        title, message = summarize_alerts([alert("~1", 82), alert("~2", 40), alert("~3")])
-        self.assertEqual(title, "gigradar: 3 new jobs (top 82)")
+        title, message = summarize_alerts([alert("~1", 82), alert("~2", 40), alert("~3")], 0)
+        self.assertEqual(title, "Gigradar: 3 new jobs (top 82)")
         self.assertEqual(message, "• 82 job ~1\n• 40 job ~2\n• job ~3")
 
     def test_score_text(self) -> None:
@@ -58,8 +58,8 @@ class NotifyTest(unittest.TestCase):
 
     def test_log_notifier_logs_every_alert(self) -> None:
         with self.assertLogs("gigradar", "INFO") as logs:
-            LogNotifier().notify_jobs([alert("~1", 82, "Full-stack web · matched: Rust"), alert("~2")])
-        self.assertIn("gigradar: 2 new jobs (top 82)", logs.output[0])
+            LogNotifier().notify_jobs([alert("~1", 82, "Full-stack web · matched: Rust"), alert("~2")], "run", 0)
+        self.assertIn("Gigradar: 2 new jobs (top 82)", logs.output[0])
         self.assertTrue(logs.output[1].endswith("82 · Full-stack web · matched: Rust | job ~1"))
         self.assertTrue(logs.output[2].endswith("Score n/a | job ~2"))
 
@@ -67,10 +67,10 @@ class NotifyTest(unittest.TestCase):
         bad, good = Recorder(True), Recorder(False)
         multi = MultiNotifier([bad, good])
         with self.assertRaises(RuntimeError) as ctx:
-            multi.notify_jobs([alert("~1")])
+            multi.notify_jobs([alert("~1")], "run", 0)
         self.assertEqual((bad.calls, good.calls), ([("jobs", 1)], [("jobs", 1)]))
         self.assertIn("Recorder: down", str(ctx.exception))
-        MultiNotifier([good]).notify("t", "m")
+        MultiNotifier([good]).notify("t", "m", None)
         self.assertEqual(good.calls[-1], ("notify", "t"))
 
     def test_build_notifier_with_telegram(self) -> None:
