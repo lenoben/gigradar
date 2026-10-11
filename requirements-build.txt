@@ -1,0 +1,2 @@
+# Optional: build the packaged app (packaging/windows/build.ps1). Not needed to run gigradar.
+pyinstaller==6.22.3

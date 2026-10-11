@@ -1,0 +1,17 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "What the main window may do: call the app's own commands and open a few known links in the browser.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    {
+      "identifier": "opener:allow-open-url",
+      "allow": [
+        { "url": "https://www.upwork.com/*" },
+        { "url": "https://t.me/BotFather" },
+        { "url": "https://go.microsoft.com/fwlink/*" }
+      ]
+    }
+  ]
+}
