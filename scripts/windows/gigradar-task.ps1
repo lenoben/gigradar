@@ -3,23 +3,27 @@
     Register, inspect or remove the Windows scheduled task that runs `python -m gigradar.watch`.
 
 .DESCRIPTION
-    Registers \gigradar\gigradar-watch for the current user:
+    Registers \gigradar\<TaskName> (default gigradar-watch) for the current user:
       - every -IntervalMinutes (default 30, minimum 15), first run ~1 minute after registering
       - "Run only when user is logged on" (interactive logon): WebView2 needs your desktop session,
         and so does showing the window if Cloudflare ever wants a click
       - runs the repo's .venv\Scripts\pythonw.exe (no console window flashing) at normal priority
         (Task Scheduler's default below-normal priority made WebView2 start too slowly)
-      - logs to <repo>\logs\gigradar.log (rotating, gitignored)
+      - logs to logs\gigradar.log next to the config (rotating, gitignored)
       - never overlaps itself (a run still going -> the next start is skipped), 15-min time limit
         (worst case search + scoring + Telegram is ~10 min; see SCORING_BUDGET_S in watch.py)
       - a run missed while the PC was off/asleep starts once when it's available again (no burst)
     No admin rights needed. Re-running -Register replaces the existing task.
+
+    A test install must not collide with a live one: give it its own -TaskName AND its own -ConfigPath
+    (the task runs that config; its data, .env and logs live next to it).
 
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File scripts\windows\gigradar-task.ps1 -Register
     powershell -ExecutionPolicy Bypass -File scripts\windows\gigradar-task.ps1 -Run
     powershell -ExecutionPolicy Bypass -File scripts\windows\gigradar-task.ps1 -Status
     powershell -ExecutionPolicy Bypass -File scripts\windows\gigradar-task.ps1 -Unregister
+    powershell -ExecutionPolicy Bypass -File scripts\windows\gigradar-task.ps1 -Register -TaskName gigradar-test -ConfigPath C:\temp\gt\gigradar.toml
 #>
 [CmdletBinding(DefaultParameterSetName = 'Register')]
 param(
@@ -27,18 +31,20 @@ param(
     [Parameter(ParameterSetName = 'Register')] [ValidateRange(15, 1440)] [int] $IntervalMinutes = 30,
     [Parameter(ParameterSetName = 'Run', Mandatory)] [switch] $Run,
     [Parameter(ParameterSetName = 'Unregister', Mandatory)] [switch] $Unregister,
-    [Parameter(ParameterSetName = 'Status', Mandatory)] [switch] $Status
+    [Parameter(ParameterSetName = 'Status', Mandatory)] [switch] $Status,
+    # Valid in every action (no ParameterSetName). The defaults are the live install.
+    [ValidatePattern('^[A-Za-z0-9._-]+$')] [string] $TaskName = 'gigradar-watch',
+    [string] $ConfigPath = ''
 )
 
 $ErrorActionPreference = 'Stop'
-$TaskName = 'gigradar-watch'
 $TaskPath = '\gigradar\'
 
 # Repo root = two levels up from scripts\windows\
 $Root    = (Resolve-Path (Join-Path $PSScriptRoot '..\..')).Path
 $Python  = Join-Path $Root '.venv\Scripts\pythonw.exe'
-$Config  = Join-Path $Root 'gigradar.toml'
-$LogFile = Join-Path $Root 'logs\gigradar.log'
+$Config  = if ($ConfigPath) { $ConfigPath } else { Join-Path $Root 'gigradar.toml' }
+$LogFile = Join-Path (Split-Path -Parent $Config) 'logs\gigradar.log'
 
 function Get-GigradarTask {
     Get-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath -ErrorAction SilentlyContinue
@@ -59,7 +65,7 @@ switch ($PSCmdlet.ParameterSetName) {
         # Start the registered task now, in exactly the scheduler's context (one normal run).
         if (-not (Get-GigradarTask)) { throw "Scheduled task $TaskPath$TaskName is not registered; use -Register first." }
         Start-ScheduledTask -TaskName $TaskName -TaskPath $TaskPath
-        Write-Host "Started $TaskPath$TaskName. Check in ~1 min: powershell -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Status"
+        Write-Host "Started $TaskPath$TaskName. Check in ~1 min: powershell -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Status -TaskName $TaskName"
         return
     }
 
@@ -106,6 +112,6 @@ switch ($PSCmdlet.ParameterSetName) {
         Write-Host "Registered $TaskPath$TaskName : every $IntervalMinutes min, first run ~1 min from now."
         Write-Host "Runs:  $Python $arguments"
         Write-Host "Log:   $LogFile"
-        Write-Host "Check: powershell -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Status"
+        Write-Host "Check: powershell -ExecutionPolicy Bypass -File `"$PSCommandPath`" -Status -TaskName $TaskName"
     }
 }

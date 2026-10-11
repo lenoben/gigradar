@@ -26,6 +26,15 @@ powershell -ExecutionPolicy Bypass -File scripts\windows\gigradar-task.ps1 -Unre
 
 The task is `\gigradar\gigradar-watch` in Task Scheduler. Re-running `-Register` replaces it.
 
+To keep a test install apart from a live one, give it its own task name and config; the other actions need the same `-TaskName`:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\windows\gigradar-task.ps1 -Register -TaskName gigradar-test -ConfigPath C:	emp\gt\gigradar.toml
+powershell -ExecutionPolicy Bypass -File scripts\windows\gigradar-task.ps1 -Status -TaskName gigradar-test
+```
+
+The data, `.env` and `logs\` of that install live next to the given config.
+
 **Testing the task command by hand:** use PowerShell, not Git Bash. Starting the venv's
 `pythonw.exe` from Git Bash fails with "Python Launcher is sorry to say… stderr duplication
 failed" (a Git Bash / venv launcher quirk), which says nothing about the task. Same command as the task:
@@ -46,19 +55,20 @@ Or trigger the registered task itself: `Start-ScheduledTask -TaskPath '\gigradar
 - **Normal priority.** Task Scheduler's default (below normal, with low I/O priority) delayed
   startup by ~40 s and made WebView2 miss pywebview's 20 s window-start wait
   ("Main window failed to start"). The script registers the task at priority 4 (normal).
-- **Log:** `logs\gigradar.log` (rotating, 1 MB × 3, gitignored).
+- **Log:** `logs\gigradar.log` next to the config (rotating, 1 MB × 3, gitignored).
+- **Quiet hours:** with `[schedule] quiet_start` / `quiet_end` in `gigradar.toml`, a run inside that window logs "quiet hours", does nothing and exits 0; new jobs wait for the first run after it. Add `--ignore-quiet-hours` to a run you start by hand.
 - **No overlap, no bursts:** a still-running run makes the next start skip; a run missed while the
   PC was asleep starts once when it wakes. Minimum interval is 15 minutes.
 
 ## Exit codes (Task Scheduler "Last Run Result")
 
-| Code | Meaning |
-|---|---|
-| 0 | ok |
-| 75 (0x4B) | stopped early: no token / blocked. Not retried; the next scheduled run tries again |
-| 2 | config error (`gigradar.toml` / `.env`) |
-| 1 | any other error, see the log |
-| 3221225477 (0xC0000005) | the process crashed (access violation); see the Windows Application log |
+| Code                    | Meaning                                                                            |
+| ----------------------- | ---------------------------------------------------------------------------------- |
+| 0                       | ok                                                                                 |
+| 75 (0x4B)               | stopped early: no token / blocked. Not retried; the next scheduled run tries again |
+| 2                       | config error (`gigradar.toml` / `.env`)                                            |
+| 1                       | any other error, see the log                                                       |
+| 3221225477 (0xC0000005) | the process crashed (access violation); see the Windows Application log            |
 
 ## Crash detection
 
