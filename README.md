@@ -26,10 +26,12 @@ pagination, email job alerts, and AI-drafted proposals — see [Web UI](#web-ui)
 
 ## Gigradar: a watcher for new jobs (optional add-on)
 
-This repository also contains **Gigradar**, an optional add-on built on `upwork_search.py`: it runs your searches on a
-schedule on your own PC, scores every new job against your profile with a small local embedding model, and notifies
-you (Windows toast, optional Telegram). Nothing above needs it. Setup: copy `gigradar.example.toml` to
-`gigradar.toml`, then see [docs/windows-scheduler.md](docs/windows-scheduler.md) for scheduling.
+This repository also contains **Gigradar**, which runs your searches on a schedule on your own PC, scores every new
+job against your profile with a small local model, and notifies you (Windows toast, optional Telegram). It is built
+on `upwork_search.py` and is entirely optional: nothing above needs it. There is a Windows desktop app (Tauri) with
+a setup wizard, or you can run it from a checkout. See [docs/gigradar.md](docs/gigradar.md), the
+[install and build guide](docs/install-and-build.md), the [requirements](docs/requirements.md) and
+[what it contacts and stores](docs/transparency.md).
 
 ## How it works
 
@@ -240,9 +242,9 @@ All optional — the tool is complete as-is. Ordered by value (adoption verified
    wall-clock ~10×. `AsyncSession` also has a built-in `retry=`/`RetryStrategy`, so you likely
    don't need a separate retry lib at all.
 2. **[`apprise`](https://github.com/caronc/apprise) — job alerts.** (16.9k★, 11.8M/mo — the
-   dominant option.) Universal notifications (Telegram, Discord, email, Slack…). Run on a schedule,
-   diff new jobs against seen IDs, and get pinged when a matching job appears. Lead-gen watcher.
-3. **`sqlite3` (stdlib) — persistence.** A local store + dedup for the `--watch`/cron mode above; no
+   dominant option.) Universal notifications (Telegram, Discord, email, Slack…). Gigradar (above)
+   already does this with toasts and Telegram; `apprise` would add more channels.
+3. **`sqlite3` (stdlib) — persistence.** Done: Gigradar keeps a local SQLite store with dedup; no
    dependency needed.
 4. **Analysis at volume — [DuckDB](https://duckdb.org/) (39.7k★) or [`polars`](https://pola.rs/)
    (39.1k★, 64M/mo).** DuckDB can run SQL _directly over the output file_
